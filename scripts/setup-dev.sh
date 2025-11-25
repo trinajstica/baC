@@ -13,7 +13,7 @@ cmd() {
   if [ "$PRINT_ONLY" -eq 1 ]; then
     echo "+ $*"
   else
-    echo "+ $*"; eval "$@"
+    echo "+ $*"; bash -c "$*"
   fi
 }
 
@@ -24,27 +24,43 @@ else
   exit 1
 fi
 
-pkgs_meson_common="meson ninja gcc pkgconf libjson-glib-devel libgtk-4-devel libadwaita-devel ffmpeg"
-# Map common package names for distributions where -devel suffix differs
+# Common packages variable intentionally removed; distro-specific lists are used below
+
+# Map package names per distribution where they differ
 case "${ID_LIKE:-}${ID:-}" in
   *debian*|*ubuntu*|debian|ubuntu)
     echo "Detected Debian/Ubuntu"
+    # Debian / Ubuntu use package names like foo-dev and ninja-build, libadwaita-1-dev
+    pkgs_debian=(
+      build-essential
+      meson
+      ninja-build
+      pkg-config
+      libjson-glib-dev
+      libgtk-4-dev
+      libadwaita-1-dev
+      ffmpeg
+    )
     install_cmds=(
       "apt update"
-      "apt install -y build-essential ${pkgs_meson_common//-devel/}-dev pkg-config"
+      "apt install -y ${pkgs_debian[*]}"
     )
+    pkg_manager_cmd="apt"
     ;;
   *fedora*|fedora)
     echo "Detected Fedora"
     install_cmds=(
-      "dnf install -y meson ninja-build @development-tools pkgconfig libadwaita-devel gtk4-devel json-glib-devel ffmpeg"
+      # Use pkgconf on Fedora for pkg-config functionality
+      "dnf install -y meson ninja-build @development-tools pkgconf libadwaita-devel gtk4-devel json-glib-devel ffmpeg"
     )
+    pkg_manager_cmd="dnf"
     ;;
   *arch*|arch|manjaro)
     echo "Detected Arch/Manjaro"
     install_cmds=(
       "pacman -Syu --noconfirm meson ninja base-devel pkgconf libadwaita gtk4 json-glib ffmpeg"
     )
+    pkg_manager_cmd="pacman"
     ;;
   *solus*|solus)
     echo "Detected Solus"
@@ -53,6 +69,7 @@ case "${ID_LIKE:-}${ID:-}" in
       "eopkg update-repo"
       "eopkg install -y meson ninja gcc pkgconf libjson-glib-devel ffmpeg libgtk-4-devel libadwaita-devel"
     )
+    pkg_manager_cmd="eopkg"
     ;;
   *suse*|opensuse)
     echo "Detected openSUSE"
@@ -60,6 +77,7 @@ case "${ID_LIKE:-}${ID:-}" in
       "zypper refresh"
       "zypper install -y meson ninja gcc pkg-config libadwaita-devel gtk4-devel libjson-glib-devel ffmpeg"
     )
+    pkg_manager_cmd="zypper"
     ;;
   *)
     echo "Unknown or unsupported distribution: $ID. I'll show generic instructions instead." >&2
@@ -70,28 +88,38 @@ case "${ID_LIKE:-}${ID:-}" in
       "# Arch: sudo pacman -Syu meson ninja base-devel pkgconf libadwaita gtk4 json-glib ffmpeg"
       "# Solus: sudo eopkg update-repo && sudo eopkg install -y meson ninja gcc pkgconf libjson-glib-devel ffmpeg libgtk-4-devel libadwaita-devel"
     )
+    pkg_manager_cmd=""
     ;;
 esac
 
-echo "\n== About to run/install the following (run as root or with sudo) =="
+printf "\n== About to run/install the following (run as root or with sudo) ==\n"
 for c in "${install_cmds[@]}"; do
   echo "$c"
 done
 
 if [ "$PRINT_ONLY" -eq 1 ]; then
-  echo "\n-- printed commands only (--print) --"; exit 0
+  printf "\n-- printed commands only (--print) --\n"; exit 0
 fi
 
-echo "\n== Running install commands =="
+printf "\n== Running install commands ==\n"
+if [ -n "${pkg_manager_cmd:-}" ] && ! command -v "$pkg_manager_cmd" >/dev/null 2>&1; then
+  echo "Package manager '$pkg_manager_cmd' not found. Please ensure it's available or run the installation manually." >&2
+  exit 1
+fi
+
 for c in "${install_cmds[@]}"; do
   if [[ "$c" =~ ^# ]]; then
     echo "$c"; continue
   fi
-  if command -v sudo >/dev/null 2>&1; then
+  if [ "$(id -u)" -eq 0 ]; then
+    # Already root; run command directly
+    cmd "$c"
+  elif command -v sudo >/dev/null 2>&1; then
     cmd "sudo $c"
   else
-    cmd "$c"
+    echo "This script requires root privileges to install packages. Please run as root or install sudo." >&2
+    exit 1
   fi
 done
 
-echo "\nDone. Verify Meson with: meson --version"
+printf "\nDone. Verify Meson with: meson --version\n"
