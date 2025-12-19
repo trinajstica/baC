@@ -42,3 +42,4 @@ __pycache__/
 tags
 *.log
 *.tmp
+build.sh

@@ -14,6 +14,8 @@ static GtkWidget *audio_combo;
 static GtkWidget *copy_video_check;
 static GtkWidget *video_combo;
 static GtkWidget *format_combo_audio;
+static GtkWidget *choose_button; /* main file chooser button */
+static GtkWidget *batch_button; /* open Batch dialog */
 static GtkStringList *audio_model = NULL;
 static GtkStringList *video_model = NULL;
 static GtkStringList *format_model = NULL;
@@ -30,6 +32,11 @@ static guint ffmpeg_stdout_watch = 0;
 static guint ffmpeg_stderr_watch = 0;
 
 static void update_output_label(void);
+
+/* Forward declarations for helper functions used before their definitions */
+static gchar *drop_down_get_active_text(GtkWidget *dropdown, GtkStringList *model);
+static void drop_down_set_items_from_ptrarray(GtkWidget *dropdown, GtkStringList **model_store, GPtrArray *arr, const char *leading);
+static void set_codecs_for_format(const char *fmt);
 
 static GPtrArray *audio_codecs = NULL;
 static GPtrArray *video_codecs = NULL;
@@ -128,7 +135,7 @@ static void reorder_codecs_by_popularity(GPtrArray *arr, const char **priority)
     }
 }
 
-/* Parse output of `ffmpeg -encoders` and populate audio_codecs/video_codecs. */
+/* Parse output of `ffmpeg -encoders` and populate audio_codecs/video_codecs (synchronous helper). */
 static void gather_ffmpeg_encoders(const char *ffmpeg_exe)
 {
     gchar *cmd;
@@ -212,6 +219,7 @@ static void gather_ffmpeg_encoders(const char *ffmpeg_exe)
     g_free(stderr_str);
 }
 
+
 /* Mapping from ffprobe codec names to common ffmpeg encoder names for best-match */
 typedef struct {
     const char *codec;
@@ -236,6 +244,8 @@ static const CodecMap audio_encoder_map[] = {
     {"vorbis", "libvorbis"},
     {"flac", "flac"},
     {"ac3", "ac3"},
+    /* Map DTS codec name to FFmpeg's DTS encoder if present */
+    {"dts", "dca"},
     {NULL, NULL}
 };
 
@@ -354,10 +364,20 @@ static void set_codecs_for_format(const char *fmt)
         }
     }
 
-    if (want_audio && audio_codecs) {
+    /* Special-case: if target container is MKV (or same as input container) and input has audio,
+     * prefer copying the audio stream rather than forcing a format default like 'aac'.
+     * This helps preserve codecs like DTS that are valid in MKV. */
+    if (audio_codecs && input_has_audio && default_audio_codec && (g_strcmp0(fmt, "mkv") == 0 || (current_format && g_strcmp0(fmt, current_format) == 0))) {
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(copy_audio_check), TRUE);
+        gtk_widget_set_sensitive(audio_combo, FALSE);
+        /* 'copy' is at index 1 (leading 'No audio' at 0) */
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(audio_combo), 1);
+        gtk_widget_set_sensitive(reset_audio, FALSE);
+    } else if (want_audio && audio_codecs) {
         int idx = find_best_encoder_in_array(audio_codecs, want_audio, audio_encoder_map);
         gtk_drop_down_set_selected(GTK_DROP_DOWN(audio_combo), idx + 1);
     }
+
     if (want_video && video_codecs) {
         int idx = find_best_encoder_in_array(video_codecs, want_video, video_encoder_map);
         gtk_drop_down_set_selected(GTK_DROP_DOWN(video_combo), idx + 1);
@@ -370,6 +390,58 @@ static void set_codecs_for_format(const char *fmt)
         gtk_widget_set_sensitive(video_combo, TRUE);
         gtk_widget_set_sensitive(reset_video, TRUE);
     }
+}
+
+/* Async wrapper: run gather_ffmpeg_encoders in a worker thread and update UI on finish. */
+static gboolean gather_encoders_finish_idle(gpointer user_data)
+{
+    (void)user_data; /* unused - we only need audio_codecs/video_codecs globals */
+
+    /* If an input file is selected, refresh the codec dropdowns to include newly discovered encoders */
+    if (input_file) {
+        int active_idx = 0;
+        drop_down_set_items_from_ptrarray(audio_combo, &audio_model, audio_codecs, "No audio");
+        if (!input_has_audio) active_idx = 0;
+        else if (default_audio_codec) {
+            int best = find_best_encoder_in_array(audio_codecs, default_audio_codec, audio_encoder_map);
+            active_idx = best + 1;
+        }
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(audio_combo), active_idx);
+
+        active_idx = 0;
+        drop_down_set_items_from_ptrarray(video_combo, &video_model, video_codecs, "No video");
+        if (!input_has_video) active_idx = 0;
+        else if (default_video_codec) {
+            int best = find_best_encoder_in_array(video_codecs, default_video_codec, video_encoder_map);
+            active_idx = best + 1;
+        }
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(video_combo), active_idx);
+
+        /* Re-apply format-based codec defaults for the active selection */
+        gchar *sel = drop_down_get_active_text(format_combo_audio, format_model);
+        if (sel) {
+            set_codecs_for_format(sel);
+            g_free(sel);
+        }
+
+        update_output_label();
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer gather_ffmpeg_encoders_thread(gpointer user_data)
+{
+    char *ffmpeg_exe = (char*)user_data;
+    gather_ffmpeg_encoders(ffmpeg_exe);
+    g_idle_add(gather_encoders_finish_idle, NULL);
+    g_free(ffmpeg_exe);
+    return NULL;
+}
+
+static void gather_ffmpeg_encoders_async(const char *ffmpeg_exe)
+{
+    char *path = ffmpeg_exe ? g_strdup(ffmpeg_exe) : NULL;
+    g_thread_new("gather_encoders", gather_ffmpeg_encoders_thread, path);
 }
 
 /* Map simple format name to preferred extension (including dot). Return NULL to keep original. */
@@ -535,13 +607,148 @@ static void on_stop_clicked(GtkButton *button, gpointer user_data);
 /* (prototype already declared above) */
 
 /* Detect default codecs from input file */
-static void detect_defaults(const char *file) {
-    gchar *ffprobe_path = g_find_program_in_path("ffprobe");
-    if (!ffprobe_path) {
-        g_warning("ffprobe not found in PATH; cannot detect codecs");
-        return;
+/* Async detect result structure used to pass data from worker thread to main loop */
+typedef struct {
+    char *file;
+    char *format;
+    char *audio_codec;
+    char *video_codec;
+    gboolean has_audio;
+    gboolean has_video;
+} DetectResult;
+
+/* Free DetectResult allocated in worker */
+static void detect_result_free(DetectResult *r) {
+    if (!r) return;
+    g_free(r->file);
+    g_free(r->format);
+    g_free(r->audio_codec);
+    g_free(r->video_codec);
+    g_free(r);
+}
+
+/* This runs on the main thread via g_idle_add to apply detection results. */
+static gboolean detect_defaults_finish(gpointer data) {
+    DetectResult *res = (DetectResult*)data;
+    /* Only apply results if the input_file hasn't changed since we started */
+    if (!res || !res->file || !input_file || g_strcmp0(res->file, input_file) != 0) {
+        detect_result_free(res);
+        return G_SOURCE_REMOVE;
     }
-    gchar *command = g_strdup_printf("%s -v quiet -print_format json -show_streams -show_format \"%s\"", ffprobe_path, file);
+
+    g_free(current_format);
+    if (res->format)
+        current_format = g_strdup(res->format);
+    else
+        current_format = NULL;
+
+    input_has_audio = res->has_audio;
+    input_has_video = res->has_video;
+
+    g_free(default_audio_codec);
+    g_free(default_video_codec);
+    default_audio_codec = res->audio_codec ? g_strdup(res->audio_codec) : NULL;
+    default_video_codec = res->video_codec ? g_strdup(res->video_codec) : NULL;
+
+    /* Update UI: populate combo boxes and set sensible defaults */
+    int active_idx = 0;
+    drop_down_set_items_from_ptrarray(audio_combo, &audio_model, audio_codecs, "No audio");
+    if (!input_has_audio) active_idx = 0;
+    else if (default_audio_codec) {
+        int best = find_best_encoder_in_array(audio_codecs, default_audio_codec, audio_encoder_map);
+        active_idx = best + 1;
+    }
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(audio_combo), active_idx);
+
+    active_idx = 0;
+    drop_down_set_items_from_ptrarray(video_combo, &video_model, video_codecs, "No video");
+    if (!input_has_video) active_idx = 0;
+    else if (default_video_codec) {
+        int best = find_best_encoder_in_array(video_codecs, default_video_codec, video_encoder_map);
+        active_idx = best + 1;
+    }
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(video_combo), active_idx);
+
+    /* Respect any explicit format the user may have selected; if they selected 'auto' or
+     * haven't made a choice, update the format combobox with the detected format. In any case
+     * call set_codecs_for_format for the active selection so detection results influence codec
+     * choices without unexpectedly overriding user intent. */
+    gchar *sel = drop_down_get_active_text(format_combo_audio, format_model);
+    if (!sel || g_strcmp0(sel, "auto") == 0) {
+        if (current_format) {
+            int fidx = find_format_index(current_format);
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(format_combo_audio), fidx);
+            set_codecs_for_format(current_format);
+        } else {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(format_combo_audio), 0);
+            set_codecs_for_format("auto");
+        }
+    } else {
+        /* User picked an explicit format — apply detection results to that choice. */
+        set_codecs_for_format(sel);
+    }
+    g_free(sel);
+
+    update_output_label();
+
+    /* Adjust control sensitivities based on detection */
+    gtk_widget_set_sensitive(copy_audio_check, TRUE);
+    gtk_widget_set_sensitive(copy_video_check, TRUE);
+    gtk_widget_set_sensitive(format_combo_audio, TRUE);
+
+    if (input_has_audio) {
+        if (default_audio_codec && g_strcmp0(default_audio_codec, "copy") == 0) {
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(copy_audio_check), TRUE);
+            gtk_widget_set_sensitive(audio_combo, FALSE);
+            gtk_widget_set_sensitive(reset_audio, FALSE);
+        } else {
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(copy_audio_check), FALSE);
+            gtk_widget_set_sensitive(audio_combo, TRUE);
+            gtk_widget_set_sensitive(reset_audio, TRUE);
+        }
+    } else {
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(copy_audio_check), FALSE);
+        gtk_widget_set_sensitive(audio_combo, TRUE);
+        gtk_widget_set_sensitive(reset_audio, TRUE);
+    }
+
+    if (input_has_video) {
+        if (default_video_codec && g_strcmp0(default_video_codec, "copy") == 0) {
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(copy_video_check), TRUE);
+            gtk_widget_set_sensitive(video_combo, FALSE);
+            gtk_widget_set_sensitive(reset_video, FALSE);
+        } else {
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(copy_video_check), FALSE);
+            gtk_widget_set_sensitive(video_combo, TRUE);
+            gtk_widget_set_sensitive(reset_video, TRUE);
+        }
+    } else {
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(copy_video_check), FALSE);
+        gtk_widget_set_sensitive(video_combo, TRUE);
+        gtk_widget_set_sensitive(reset_video, TRUE);
+    }
+
+    /* Ensure Start/Stop reflect running state */
+    gtk_widget_set_sensitive(stop_button, FALSE);
+
+    detect_result_free(res);
+    return G_SOURCE_REMOVE;
+}
+
+/* Worker: run ffprobe synchronously in a thread and return a DetectResult via g_idle_add */
+static gpointer detect_defaults_thread(gpointer user_data) {
+    char *file = (char *)user_data;
+    DetectResult *res = g_new0(DetectResult, 1);
+    res->file = g_strdup(file);
+
+    gchar *ffprobe = g_find_program_in_path("ffprobe");
+    if (!ffprobe) {
+        g_warning("ffprobe not found in PATH; cannot detect codecs");
+        g_idle_add(detect_defaults_finish, res);
+        g_free(file);
+        return NULL;
+    }
+    gchar *command = g_strdup_printf("%s -v quiet -print_format json -show_streams -show_format \"%s\"", ffprobe, file);
     gchar *stdout_str = NULL;
     gchar *stderr_str = NULL;
     gint exit_status;
@@ -549,28 +756,35 @@ static void detect_defaults(const char *file) {
 
     if (!g_spawn_command_line_sync(command, &stdout_str, &stderr_str, &exit_status, &error)) {
         g_warning("Failed to run ffprobe: %s", error->message);
-        g_error_free(error);
+        if (error) g_error_free(error);
         g_free(command);
-        return;
+        g_free(ffprobe);
+        g_idle_add(detect_defaults_finish, res);
+        g_free(file);
+        return NULL;
     }
     g_free(command);
-    g_free(ffprobe_path);
+    g_free(ffprobe);
 
     if (exit_status != 0) {
         g_warning("ffprobe failed: %s", stderr_str);
         g_free(stdout_str);
         g_free(stderr_str);
-        return;
+        g_idle_add(detect_defaults_finish, res);
+        g_free(file);
+        return NULL;
     }
 
     JsonParser *parser = json_parser_new();
     if (!json_parser_load_from_data(parser, stdout_str, -1, &error)) {
         g_warning("Failed to parse json: %s", error->message);
-        g_error_free(error);
+        if (error) g_error_free(error);
         g_object_unref(parser);
         g_free(stdout_str);
         g_free(stderr_str);
-        return;
+        g_idle_add(detect_defaults_finish, res);
+        g_free(file);
+        return NULL;
     }
 
     JsonNode *root = json_parser_get_root(parser);
@@ -585,11 +799,10 @@ static void detect_defaults(const char *file) {
             gchar *first = g_strstrip(parts[0]);
             gchar *low = g_utf8_strdown(first, -1);
             const char *mapped = map_probe_format_to_container(low);
-            g_free(current_format);
             if (mapped)
-                current_format = g_strdup(mapped);
+                res->format = g_strdup(mapped);
             else
-                current_format = g_strdup(low);
+                res->format = g_strdup(low);
             g_free(low);
             g_strfreev(parts);
         }
@@ -601,19 +814,32 @@ static void detect_defaults(const char *file) {
         const char *codec_name = json_object_get_string_member(stream, "codec_name");
 
         if (g_strcmp0(codec_type, "audio") == 0) {
-            input_has_audio = TRUE;
-            if (!default_audio_codec)
-                default_audio_codec = g_strdup(codec_name);
+            res->has_audio = TRUE;
+            if (!res->audio_codec && codec_name)
+                res->audio_codec = g_strdup(codec_name);
         } else if (g_strcmp0(codec_type, "video") == 0) {
-            input_has_video = TRUE;
-            if (!default_video_codec)
-                default_video_codec = g_strdup(codec_name);
+            res->has_video = TRUE;
+            if (!res->video_codec && codec_name)
+                res->video_codec = g_strdup(codec_name);
         }
     }
 
     g_object_unref(parser);
     g_free(stdout_str);
     g_free(stderr_str);
+
+    g_idle_add(detect_defaults_finish, res);
+    g_free(file);
+    return NULL;
+}
+
+/* Public: start async detect on `file` */
+static void detect_defaults_async(const char *file) {
+    if (!file) return;
+    /* Spawn a thread to run ffprobe so we don't block the UI */
+    char *path = g_strdup(file);
+    /* Use g_thread_new to run worker; it's fine for short-lived ops */
+    g_thread_new("detect_defaults", detect_defaults_thread, path);
 }
 
 /* Helper to update output filename */
@@ -664,7 +890,8 @@ static void on_file_dialog_open_finish(GObject *source_object, GAsyncResult *res
     g_free(default_video_codec);
     default_audio_codec = NULL;
     default_video_codec = NULL;
-    detect_defaults(input_file);
+    /* Start async detection (don't block UI). Set temporary defaults; UI will be updated when detection finishes. */
+    detect_defaults_async(input_file);
     if (!default_audio_codec) default_audio_codec = g_strdup("copy");
     if (!default_video_codec) default_video_codec = g_strdup("copy");
 
@@ -862,10 +1089,22 @@ static void on_reset_video_clicked(GtkButton *button, gpointer user_data) {
 
 /* Start conversion */
 static void on_start_clicked(GtkButton *button, gpointer user_data) {
-    // Disable all except stop
+    /* Disable Start and enable Stop; also disable other interactive controls while conversion runs */
     gtk_widget_set_sensitive(start_button, FALSE);
     gtk_widget_set_sensitive(stop_button, TRUE);
-    // Construct ffmpeg command
+
+    /* Disable file/batch selectors and codec controls so user cannot change settings mid-run */
+    if (choose_button) gtk_widget_set_sensitive(choose_button, FALSE);
+    if (batch_button) gtk_widget_set_sensitive(batch_button, FALSE);
+    if (copy_audio_check) gtk_widget_set_sensitive(copy_audio_check, FALSE);
+    if (copy_video_check) gtk_widget_set_sensitive(copy_video_check, FALSE);
+    if (reset_audio) gtk_widget_set_sensitive(reset_audio, FALSE);
+    if (reset_video) gtk_widget_set_sensitive(reset_video, FALSE);
+    if (format_combo_audio) gtk_widget_set_sensitive(format_combo_audio, FALSE);
+    if (audio_combo) gtk_widget_set_sensitive(audio_combo, FALSE);
+    if (video_combo) gtk_widget_set_sensitive(video_combo, FALSE);
+
+    /* Construct ffmpeg command */
     /* Determine selections; combo boxes now have a 'No audio'/'No video' at index 0 */
 
     /* Build a human-readable preview command for log */
@@ -935,6 +1174,13 @@ static void on_start_clicked(GtkButton *button, gpointer user_data) {
     /* show alert to user (no parent available here) */
     show_alert(NULL, "ffmpeg error", msg);
     /* Restore UI since spawn failed */
+    if (choose_button) gtk_widget_set_sensitive(choose_button, TRUE);
+    if (batch_button) gtk_widget_set_sensitive(batch_button, TRUE);
+    gtk_widget_set_sensitive(copy_audio_check, TRUE);
+    gtk_widget_set_sensitive(copy_video_check, TRUE);
+    gtk_widget_set_sensitive(format_combo_audio, TRUE);
+    gtk_widget_set_sensitive(reset_audio, TRUE);
+    gtk_widget_set_sensitive(reset_video, TRUE);
     update_start_button_state();
     gtk_widget_set_sensitive(stop_button, FALSE);
         if (error) g_error_free(error);
@@ -973,6 +1219,14 @@ static void on_start_clicked(GtkButton *button, gpointer user_data) {
 static gboolean enable_ui_after_child(gpointer user_data) {
     update_start_button_state();
     gtk_widget_set_sensitive(stop_button, FALSE);
+
+    /* Re-enable file controls and checkboxes */
+    if (choose_button) gtk_widget_set_sensitive(choose_button, TRUE);
+    if (batch_button) gtk_widget_set_sensitive(batch_button, TRUE);
+    gtk_widget_set_sensitive(copy_audio_check, TRUE);
+    gtk_widget_set_sensitive(copy_video_check, TRUE);
+    gtk_widget_set_sensitive(format_combo_audio, TRUE);
+
     /* Re-enable codec combos unless their 'Copy' checkboxes are active */
     if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(copy_audio_check)))
         gtk_widget_set_sensitive(audio_combo, TRUE);
@@ -982,6 +1236,11 @@ static gboolean enable_ui_after_child(gpointer user_data) {
         gtk_widget_set_sensitive(video_combo, TRUE);
     else
         gtk_widget_set_sensitive(video_combo, FALSE);
+
+    /* Re-enable reset buttons appropriately */
+    gtk_widget_set_sensitive(reset_audio, !gtk_check_button_get_active(GTK_CHECK_BUTTON(copy_audio_check)));
+    gtk_widget_set_sensitive(reset_video, !gtk_check_button_get_active(GTK_CHECK_BUTTON(copy_video_check)));
+
     return G_SOURCE_REMOVE;
 }
 
@@ -1526,8 +1785,8 @@ static void set_input_and_update_ui(const char *path)
     g_free(default_video_codec);
     default_audio_codec = NULL;
     default_video_codec = NULL;
-    /* run autodetection */
-    detect_defaults(input_file);
+    /* Start async autodetection (don't block UI). Use temporary defaults until detection finishes. */
+    detect_defaults_async(input_file);
     if (!default_audio_codec) default_audio_codec = g_strdup("copy");
     if (!default_video_codec) default_video_codec = g_strdup("copy");
 
@@ -1712,6 +1971,14 @@ static void on_stop_clicked(GtkButton *button, gpointer user_data) {
     // Re-enable UI
     update_start_button_state();
     gtk_widget_set_sensitive(stop_button, FALSE);
+
+    /* Re-enable file selectors and checkboxes */
+    if (choose_button) gtk_widget_set_sensitive(choose_button, TRUE);
+    if (batch_button) gtk_widget_set_sensitive(batch_button, TRUE);
+    gtk_widget_set_sensitive(copy_audio_check, TRUE);
+    gtk_widget_set_sensitive(copy_video_check, TRUE);
+    gtk_widget_set_sensitive(format_combo_audio, TRUE);
+
     /* Re-enable codec combos unless their 'Copy' checkboxes are active */
     if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(copy_audio_check)))
         gtk_widget_set_sensitive(audio_combo, TRUE);
@@ -1721,6 +1988,11 @@ static void on_stop_clicked(GtkButton *button, gpointer user_data) {
         gtk_widget_set_sensitive(video_combo, TRUE);
     else
         gtk_widget_set_sensitive(video_combo, FALSE);
+
+    /* Re-enable reset buttons appropriately */
+    gtk_widget_set_sensitive(reset_audio, !gtk_check_button_get_active(GTK_CHECK_BUTTON(copy_audio_check)));
+    gtk_widget_set_sensitive(reset_video, !gtk_check_button_get_active(GTK_CHECK_BUTTON(copy_video_check)));
+
     gtk_text_buffer_insert_at_cursor(log_buffer, "Conversion stopped.\n", -1);
 }
 
@@ -1780,7 +2052,6 @@ activate (GtkApplication *app)
 {
     GtkWidget *window;
     GtkWidget *box;
-    GtkWidget *choose_button;
     GtkWidget *audio_box, *video_box;
     GtkWidget *scrolled;
 
@@ -1804,7 +2075,7 @@ activate (GtkApplication *app)
     choose_button = gtk_button_new_with_label ("Choose input file");
     g_signal_connect(choose_button, "clicked", G_CALLBACK(on_choose_file_clicked), window);
     gtk_box_append (GTK_BOX (hchoose), choose_button);
-    GtkWidget *batch_button = gtk_button_new_with_label ("Batch");
+    batch_button = gtk_button_new_with_label ("Batch");
     g_signal_connect(batch_button, "clicked", G_CALLBACK(on_batch_button_clicked), window);
     gtk_box_append (GTK_BOX (hchoose), batch_button);
     gtk_box_append (GTK_BOX (box), hchoose);
@@ -1951,8 +2222,8 @@ main (int argc, char **argv)
         g_printerr ("ffprobe not found in PATH\n");
 
     /* Gather available encoders from ffmpeg (if present) so we can populate
-     * codec lists. */
-    gather_ffmpeg_encoders(ffmpeg_path);
+     * codec lists. Do this asynchronously to avoid delaying startup. */
+    gather_ffmpeg_encoders_async(ffmpeg_path);
 
     /* Known container/format list (simple set). Kept separate so UI can
      * offer common choices regardless of ffmpeg availability. */
