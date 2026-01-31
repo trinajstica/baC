@@ -1,0 +1,2090 @@
+#!/usr/bin/env python3
+"""
+baConverter - Orodje za urejanje MKV datotek
+Avtor: SimOne
+
+Uporaba:
+  bac          - Zaženi GUI
+  bac -q       - Hitro združi vse video+srt v trenutnem imeniku v MKV
+  bac -qq      - Kot -q, ampak izbriše izvorne datoteke po pretvorbi
+"""
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import subprocess
+import json
+import os
+import shutil
+import argparse
+import sys
+from pathlib import Path
+
+
+class BaMKV:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("baC - Urejanje MKV datotek")
+        self.root.geometry("900x700")
+        self.root.minsize(800, 650)
+        
+        self.mkv_pot = None
+        self.stevilke_sledi = []
+        
+        self._preveri_orodja()
+        self._ustvari_vmesnik()
+        self._nastavi_drag_drop()
+    
+    def _nastavi_drag_drop(self):
+        """Nastavi drag & drop za celotno aplikacijo."""
+        try:
+            # Poskusi uvoziti tkinterdnd2
+            from tkinterdnd2 import DND_FILES
+            
+            # Glavno okno - MKV datoteka
+            self.vnos_pot.drop_target_register(DND_FILES)
+            self.vnos_pot.dnd_bind('<<Drop>>', self._drop_mkv)
+            
+            # Podnapisi
+            self.vnos_podnapis.drop_target_register(DND_FILES)
+            self.vnos_podnapis.dnd_bind('<<Drop>>', self._drop_podnapis)
+            
+            # Hitro pretvorbo
+            self.vnos_hitro_video.drop_target_register(DND_FILES)
+            self.vnos_hitro_video.dnd_bind('<<Drop>>', self._drop_hitro_video)
+            
+            # Drevo vhodnih datotek
+            self.drevo_vhod.drop_target_register(DND_FILES)
+            self.drevo_vhod.dnd_bind('<<Drop>>', self._drop_vhodne)
+            
+            # Gumbi za dodajanje v pregledu sledi
+            self.gumb_podnapisi.drop_target_register(DND_FILES)
+            self.gumb_podnapisi.dnd_bind('<<Drop>>', self._drop_op_podnapisi)
+            self.gumb_zvok.drop_target_register(DND_FILES)
+            self.gumb_zvok.dnd_bind('<<Drop>>', self._drop_op_zvok)
+            
+        except ImportError:
+            # tkinterdnd2 ni na voljo - uporabi alternativno metodo za Linux
+            self._nastavi_xdnd()
+    
+    def _nastavi_xdnd(self):
+        """Alternativna metoda za drag & drop brez tkinterdnd2."""
+        # Poskusi nativno Tk DnD podporo
+        try:
+            self.root.tk.call('package', 'require', 'tkdnd')
+            
+            for widget, callback in [
+                (self.vnos_pot, self._drop_mkv),
+                (self.vnos_podnapis, self._drop_podnapis),
+                (self.vnos_hitro_video, self._drop_hitro_video),
+                (self.drevo_vhod, self._drop_vhodne),
+                (self.gumb_podnapisi, self._drop_op_podnapisi),
+                (self.gumb_zvok, self._drop_op_zvok)
+            ]:
+                self.root.tk.call('tkdnd::drop_target', 'register', widget._w, '*')
+                widget.bind('<<Drop>>', callback)
+        except tk.TclError:
+            print("Drag & drop ni na voljo. Namestite tkdnd ali tkinterdnd2.")
+    
+    def _parsiraj_drop_pot(self, podatki):
+        """Parsira pot iz drag & drop dogodka."""
+        pot = podatki.strip()
+        # Odstrani file:// predpono
+        if pot.startswith('file://'):
+            pot = pot[7:]
+        # Odstrani zavite oklepaje če obstajajo
+        if pot.startswith('{') and pot.endswith('}'):
+            pot = pot[1:-1]
+        # Dekodiraj URL encoding
+        from urllib.parse import unquote
+        pot = unquote(pot)
+        # Vzemi prvo datoteko če jih je več
+        if '\n' in pot:
+            pot = pot.split('\n')[0].strip()
+        return pot
+    
+    def _drop_mkv(self, dogodek):
+        """Obdelaj drop MKV datoteke."""
+        pot = self._parsiraj_drop_pot(dogodek.data)
+        if pot and os.path.isfile(pot):
+            koncnica = Path(pot).suffix.lower()
+            if koncnica == '.mkv':
+                self.mkv_pot = pot
+                self.vnos_pot.delete(0, tk.END)
+                self.vnos_pot.insert(0, pot)
+                self._osvezi_sledi()
+                self._osvezi_odstranitev()
+                self.status.config(text=f"Odprto: {Path(pot).name}")
+            else:
+                messagebox.showwarning("Opozorilo", "Izberite MKV datoteko.")
+        return dogodek.action if hasattr(dogodek, 'action') else None
+    
+    def _drop_podnapis(self, dogodek):
+        """Obdelaj drop datoteke podnapisov."""
+        pot = self._parsiraj_drop_pot(dogodek.data)
+        if pot and os.path.isfile(pot):
+            koncnica = Path(pot).suffix.lower()
+            if koncnica in ['.srt', '.ass', '.ssa', '.sub', '.txt', '.vtt']:
+                self.vnos_podnapis.delete(0, tk.END)
+                self.vnos_podnapis.insert(0, pot)
+            else:
+                messagebox.showwarning("Opozorilo", "Izberite datoteko podnapisov.")
+        return dogodek.action if hasattr(dogodek, 'action') else None
+    
+    def _drop_hitro_video(self, dogodek):
+        """Obdelaj drop video datoteke za hitro pretvorbo."""
+        pot = self._parsiraj_drop_pot(dogodek.data)
+        if pot and os.path.isfile(pot):
+            koncnica = Path(pot).suffix.lower()
+            video_koncnice = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg', '.mkv']
+            if koncnica in video_koncnice:
+                # Simuliraj izbiro datoteke
+                self.vnos_hitro_video.delete(0, tk.END)
+                self.vnos_hitro_video.insert(0, pot)
+                self._poisci_povezane_hitro(pot)
+            else:
+                messagebox.showwarning("Opozorilo", "Izberite video datoteko.")
+        return dogodek.action if hasattr(dogodek, 'action') else None
+    
+    def _poisci_povezane_hitro(self, pot):
+        """Poišče povezane datoteke za hitro pretvorbo."""
+        # Počisti prejšnje
+        for vrstica in self.drevo_hitro.get_children():
+            self.drevo_hitro.delete(vrstica)
+        self.hitro_datoteke.clear()
+        self.hitro_izbrane.clear()
+        
+        # Poišči povezane datoteke
+        mapa = os.path.dirname(pot)
+        osnovni_ime = Path(pot).stem
+        
+        koncnice_sub = [".srt", ".ass", ".ssa", ".sub", ".vtt", ".txt"]
+        koncnice_audio = [".mp3", ".aac", ".ac3", ".flac", ".ogg", ".wav", ".m4a", ".opus", ".dts"]
+        
+        najdene = []
+        
+        for datoteka in os.listdir(mapa):
+            dat_pot = os.path.join(mapa, datoteka)
+            if not os.path.isfile(dat_pot) or dat_pot == pot:
+                continue
+            
+            dat_stem = Path(datoteka).stem
+            dat_suffix = Path(datoteka).suffix.lower()
+            
+            if dat_stem == osnovni_ime or dat_stem.startswith(osnovni_ime + ".") or dat_stem.startswith(osnovni_ime + "_"):
+                if dat_suffix in koncnice_sub:
+                    najdene.append({"vrsta": "Podnapisi", "pot": dat_pot, "ime": datoteka})
+                elif dat_suffix in koncnice_audio:
+                    najdene.append({"vrsta": "Zvok", "pot": dat_pot, "ime": datoteka})
+        
+        # Dodaj video
+        self.hitro_datoteke.append({"vrsta": "Video", "pot": pot, "ime": Path(pot).name})
+        self.hitro_izbrane.add("0")
+        self.drevo_hitro.insert("", "end", iid="0", values=("☑", "Video", Path(pot).name))
+        
+        # Dodaj najdene
+        for i, dat in enumerate(najdene, start=1):
+            self.hitro_datoteke.append(dat)
+            self.hitro_izbrane.add(str(i))
+            self.drevo_hitro.insert("", "end", iid=str(i), values=("☑", dat["vrsta"], dat["ime"]))
+        
+        stevilo_sub = sum(1 for d in najdene if d["vrsta"] == "Podnapisi")
+        self.status.config(text=f"Najdenih {len(najdene)} povezanih datotek ({stevilo_sub} podnapisov)")
+    
+    def _drop_vhodne(self, dogodek):
+        """Obdelaj drop datotek v seznam vhodnih datotek."""
+        pot = self._parsiraj_drop_pot(dogodek.data)
+        if pot and os.path.isfile(pot):
+            koncnica = Path(pot).suffix.lower()
+            
+            # Določi vrsto datoteke
+            video_koncnice = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg']
+            audio_koncnice = ['.mp3', '.aac', '.ac3', '.flac', '.ogg', '.wav', '.m4a', '.opus', '.dts', '.eac3']
+            sub_koncnice = ['.srt', '.ass', '.ssa', '.sub', '.txt', '.vtt']
+            
+            if koncnica in video_koncnice:
+                vrsta = "video"
+            elif koncnica in audio_koncnice:
+                vrsta = "audio"
+            elif koncnica in sub_koncnice:
+                vrsta = "podnapisi"
+            else:
+                messagebox.showwarning("Opozorilo", "Nepodprta vrsta datoteke.")
+                return dogodek.action if hasattr(dogodek, 'action') else None
+            
+            # Vprašaj za jezik
+            jezik = self._vprasaj_jezik()
+            
+            self.vhodne_datoteke.append({"vrsta": vrsta, "pot": pot, "jezik": jezik})
+            self.drevo_vhod.insert("", "end", values=(
+                vrsta.capitalize() if vrsta != "audio" else "Zvok",
+                Path(pot).name,
+                jezik
+            ))
+        return dogodek.action if hasattr(dogodek, 'action') else None
+    
+    def _drop_op_podnapisi(self, dogodek):
+        """Obdelaj drop podnapisov na gumb - doda operacijo."""
+        pot = self._parsiraj_drop_pot(dogodek.data)
+        if pot and os.path.isfile(pot):
+            koncnica = Path(pot).suffix.lower()
+            if koncnica not in ['.srt', '.ass', '.ssa', '.sub', '.vtt', '.txt']:
+                messagebox.showwarning("Opozorilo", "Izberite datoteko podnapisov.")
+                return dogodek.action if hasattr(dogodek, 'action') else None
+            
+            if not self.mkv_pot:
+                messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+                return dogodek.action if hasattr(dogodek, 'action') else None
+            
+            # Dialog za nastavitve
+            self._prikazi_dialog_podnapisi(pot)
+        return dogodek.action if hasattr(dogodek, 'action') else None
+    
+    def _drop_op_zvok(self, dogodek):
+        """Obdelaj drop zvoka na gumb - doda operacijo."""
+        pot = self._parsiraj_drop_pot(dogodek.data)
+        if pot and os.path.isfile(pot):
+            koncnica = Path(pot).suffix.lower()
+            audio_koncnice = ['.mp3', '.aac', '.ac3', '.flac', '.ogg', '.wav', '.m4a', '.opus', '.dts', '.eac3']
+            if koncnica not in audio_koncnice:
+                messagebox.showwarning("Opozorilo", "Izberite zvočno datoteko.")
+                return dogodek.action if hasattr(dogodek, 'action') else None
+            
+            if not self.mkv_pot:
+                messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+                return dogodek.action if hasattr(dogodek, 'action') else None
+            
+            jezik = self._vprasaj_jezik()
+            self._dodaj_operacijo("Dodaj zvok",
+                f"{Path(pot).name} ({jezik})",
+                {"pot": pot, "jezik": jezik})
+        return dogodek.action if hasattr(dogodek, 'action') else None
+    
+    def _prikazi_dialog_podnapisi(self, pot):
+        """Prikaže dialog za nastavitve podnapisov."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Nastavitve podnapisov")
+        dialog.geometry("350x180")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text="Jezik:").pack(pady=(10, 5))
+        jezik_izbira = ttk.Combobox(dialog, values=[
+            "slv - Slovenščina", "eng - Angleščina", "hrv - Hrvaščina", "und - Nedoločen"
+        ], width=25)
+        jezik_izbira.set("slv - Slovenščina")
+        jezik_izbira.pack(pady=5)
+        
+        privzet_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(dialog, text="Nastavi kot privzet", variable=privzet_var).pack(pady=5)
+        
+        def potrdi():
+            jezik = jezik_izbira.get().split(" - ")[0]
+            self._dodaj_operacijo("Dodaj podnapise",
+                f"{Path(pot).name} ({jezik})",
+                {"pot": pot, "jezik": jezik, "privzet": privzet_var.get()})
+            dialog.destroy()
+        
+        ttk.Button(dialog, text="Potrdi", command=potrdi).pack(pady=10)
+    
+    def _nastavi_zasedeno(self, sporocilo):
+        """Nastavi aplikacijo v zaseden način s sporočilom."""
+        self.status.config(text=sporocilo)
+        self.napredek.pack(side="right", padx=(10, 0))
+        self.napredek.start(10)
+        self.root.config(cursor="watch")
+        self.root.update()
+    
+    def _nastavi_prosto(self, sporocilo="Pripravljeno"):
+        """Nastavi aplikacijo nazaj v prosto stanje."""
+        self.napredek.stop()
+        self.napredek.pack_forget()
+        self.root.config(cursor="")
+        self.status.config(text=sporocilo)
+        self.root.update()
+    
+    def _poisci_orodje(self, ime):
+        """Poišče orodje v sistemu, vključno s flatpak paketi."""
+        # Najprej preveri sistemsko pot
+        pot = shutil.which(ime)
+        if pot:
+            return pot
+        
+        # Preveri flatpak
+        flatpak_poti = {
+            "ffmpeg": [
+                "/var/lib/flatpak/exports/bin/org.ffmpeg.FFmpeg",
+                os.path.expanduser("~/.local/share/flatpak/exports/bin/org.ffmpeg.FFmpeg"),
+            ],
+            "ffprobe": [
+                "/var/lib/flatpak/exports/bin/org.ffmpeg.FFmpeg",  # ffprobe je del ffmpeg
+                os.path.expanduser("~/.local/share/flatpak/exports/bin/org.ffmpeg.FFmpeg"),
+            ],
+            "mkvmerge": [
+                "/var/lib/flatpak/exports/bin/org.bunkus.mkvtoolnix-gui",
+                os.path.expanduser("~/.local/share/flatpak/exports/bin/org.bunkus.mkvtoolnix-gui"),
+            ],
+        }
+        
+        # Poišči v flatpak aplikacijah
+        try:
+            rezultat = subprocess.run(
+                ["flatpak", "list", "--app", "--columns=application"],
+                capture_output=True, text=True, timeout=5
+            )
+            if rezultat.returncode == 0:
+                aplikacije = rezultat.stdout.strip().split("\n")
+                
+                # FFmpeg flatpak
+                if ime in ["ffmpeg", "ffprobe"]:
+                    for app in aplikacije:
+                        if "ffmpeg" in app.lower():
+                            return f"flatpak run --command={ime} {app}"
+                
+                # MKVToolNix flatpak
+                if ime == "mkvmerge":
+                    for app in aplikacije:
+                        if "mkvtoolnix" in app.lower():
+                            return f"flatpak run --command=mkvmerge {app}"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        # Preveri pogoste lokacije
+        pogoste_poti = [
+            f"/usr/bin/{ime}",
+            f"/usr/local/bin/{ime}",
+            f"/snap/bin/{ime}",
+            os.path.expanduser(f"~/bin/{ime}"),
+            os.path.expanduser(f"~/.local/bin/{ime}"),
+        ]
+        
+        for pot in pogoste_poti:
+            if os.path.isfile(pot) and os.access(pot, os.X_OK):
+                return pot
+        
+        return None
+    
+    def _preveri_orodja(self):
+        """Preveri, ali so potrebna orodja nameščena."""
+        self.ffmpeg = self._poisci_orodje("ffmpeg")
+        self.ffprobe = self._poisci_orodje("ffprobe")
+        self.mkvmerge = self._poisci_orodje("mkvmerge")
+        
+        manjkajoca = []
+        if not self.ffmpeg:
+            manjkajoca.append("ffmpeg")
+        if not self.ffprobe:
+            manjkajoca.append("ffprobe")
+        if not self.mkvmerge:
+            manjkajoca.append("mkvmerge (mkvtoolnix)")
+        
+        if manjkajoca:
+            messagebox.showwarning(
+                "Manjkajoča orodja",
+                f"Manjkajo naslednja orodja: {', '.join(manjkajoca)}\n\n"
+                "Namestite jih za polno funkcionalnost:\n"
+                "• APT: sudo apt install ffmpeg mkvtoolnix\n"
+                "• Flatpak: flatpak install org.ffmpeg.FFmpeg\n"
+                "• Snap: sudo snap install ffmpeg"
+            )
+        else:
+            # Prikaži najdena orodja v konzoli
+            print(f"Najdena orodja:")
+            print(f"  ffmpeg: {self.ffmpeg}")
+            print(f"  ffprobe: {self.ffprobe}")
+            print(f"  mkvmerge: {self.mkvmerge}")
+    
+    def _ustvari_vmesnik(self):
+        """Ustvari glavni vmesnik."""
+        # Okvir za izbiro datoteke
+        okvir_datoteka = ttk.LabelFrame(self.root, text="MKV datoteka", padding=10)
+        okvir_datoteka.pack(fill="x", padx=10, pady=5)
+        
+        self.vnos_pot = ttk.Entry(okvir_datoteka, width=70)
+        self.vnos_pot.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        ttk.Button(okvir_datoteka, text="Odpri MKV", command=self._odpri_mkv).pack(side="left")
+        
+        # Zavihki
+        zavihki = ttk.Notebook(self.root)
+        zavihki.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Zavihek: Pregled sledi
+        okvir_pregled = ttk.Frame(zavihki, padding=10)
+        zavihki.add(okvir_pregled, text="Pregled sledi")
+        self._ustvari_pregled(okvir_pregled)
+        
+        # Zavihek: Dodaj podnapise
+        okvir_podnapisi = ttk.Frame(zavihki, padding=10)
+        zavihki.add(okvir_podnapisi, text="Dodaj podnapise")
+        self._ustvari_podnapisi(okvir_podnapisi)
+        
+        # Zavihek: Pretvori
+        okvir_pretvorba = ttk.Frame(zavihki, padding=10)
+        zavihki.add(okvir_pretvorba, text="Pretvori")
+        self._ustvari_pretvorbo(okvir_pretvorba)
+        
+        # Zavihek: Odstrani sledi
+        okvir_odstrani = ttk.Frame(zavihki, padding=10)
+        zavihki.add(okvir_odstrani, text="Odstrani sledi")
+        self._ustvari_odstranitev(okvir_odstrani)
+        
+        # Zavihek: Ustvari MKV
+        okvir_ustvari = ttk.Frame(zavihki, padding=10)
+        zavihki.add(okvir_ustvari, text="Ustvari MKV")
+        self._ustvari_izdelavo(okvir_ustvari)
+        
+        # Zavihek: Hitro pretvori v MKV
+        okvir_hitro = ttk.Frame(zavihki, padding=10)
+        zavihki.add(okvir_hitro, text="Hitro v MKV")
+        self._ustvari_hitro_pretvorbo(okvir_hitro)
+        
+        # Statusna vrstica
+        okvir_status = ttk.Frame(self.root)
+        okvir_status.pack(fill="x", padx=10, pady=5)
+        
+        self.status = ttk.Label(okvir_status, text="Pripravljeno", relief="sunken", anchor="w")
+        self.status.pack(side="left", fill="x", expand=True)
+        
+        self.napredek = ttk.Progressbar(okvir_status, mode="indeterminate", length=150)
+        self.napredek.pack(side="right", padx=(10, 0))
+        self.napredek.pack_forget()  # Skrij na začetku
+    
+    def _ustvari_pregled(self, okvir):
+        """Ustvari zavihek za pregled sledi z vrsto operacij."""
+        # Zgornji del - pregled sledi
+        okvir_sledi = ttk.LabelFrame(okvir, text="Sledi v datoteki", padding=5)
+        okvir_sledi.pack(fill="both", expand=True)
+        
+        okvir_drevo = ttk.Frame(okvir_sledi)
+        okvir_drevo.pack(fill="both", expand=True)
+        
+        stolpci = ("Št.", "Vrsta", "Kodek", "Jezik", "Naslov")
+        self.drevo_sledi = ttk.Treeview(okvir_drevo, columns=stolpci, show="headings", height=5)
+        
+        for stolpec in stolpci:
+            self.drevo_sledi.heading(stolpec, text=stolpec)
+            self.drevo_sledi.column(stolpec, width=120)
+        
+        self.drevo_sledi.column("Št.", width=50)
+        self.drevo_sledi.column("Vrsta", width=80)
+        self.drevo_sledi.column("Kodek", width=150)
+        self.drevo_sledi.column("Jezik", width=80)
+        self.drevo_sledi.column("Naslov", width=200)
+        
+        drsnik = ttk.Scrollbar(okvir_drevo, orient="vertical", command=self.drevo_sledi.yview)
+        self.drevo_sledi.configure(yscrollcommand=drsnik.set)
+        
+        self.drevo_sledi.pack(side="left", fill="both", expand=True)
+        drsnik.pack(side="right", fill="y")
+        
+        # Kontekstni meni
+        self.meni_sledi = tk.Menu(self.root, tearoff=0)
+        self.meni_sledi.add_command(label="Odstrani sled", command=self._op_odstrani_sled)
+        self.meni_sledi.add_command(label="Spremeni jezik", command=self._op_spremeni_jezik)
+        self.meni_sledi.add_command(label="Spremeni naslov", command=self._op_spremeni_naslov)
+        self.meni_sledi.add_command(label="Nastavi kot privzeto", command=self._op_nastavi_privzeto)
+        self.meni_sledi.add_separator()
+        self.meni_sledi.add_command(label="Pretvori zvok v AAC", command=lambda: self._op_pretvori_zvok("aac"))
+        self.meni_sledi.add_command(label="Pretvori zvok v AC3", command=lambda: self._op_pretvori_zvok("ac3"))
+        self.meni_sledi.add_command(label="Pretvori zvok v MP3", command=lambda: self._op_pretvori_zvok("mp3"))
+        
+        self.drevo_sledi.bind("<Button-3>", self._prikazi_meni_sledi)
+        
+        # Gumbi za dodajanje datotek
+        okvir_dodaj = ttk.Frame(okvir_sledi)
+        okvir_dodaj.pack(fill="x", pady=5)
+        
+        ttk.Button(okvir_dodaj, text="Osveži", command=self._osvezi_sledi).pack(side="left", padx=2)
+        self.gumb_podnapisi = ttk.Button(okvir_dodaj, text="+ Podnapisi", command=self._op_dodaj_podnapise)
+        self.gumb_podnapisi.pack(side="left", padx=2)
+        self.gumb_zvok = ttk.Button(okvir_dodaj, text="+ Zvok", command=self._op_dodaj_zvok)
+        self.gumb_zvok.pack(side="left", padx=2)
+        
+        # Spodnji del - čakajoče operacije
+        okvir_operacije = ttk.LabelFrame(okvir, text="Čakajoče operacije", padding=5)
+        okvir_operacije.pack(fill="both", expand=True, pady=(5, 0))
+        
+        self.cakalne_operacije = []
+        
+        stolpci_op = ("Št.", "Operacija", "Podrobnosti")
+        self.drevo_operacije = ttk.Treeview(okvir_operacije, columns=stolpci_op, show="headings", height=4)
+        
+        self.drevo_operacije.heading("Št.", text="#")
+        self.drevo_operacije.heading("Operacija", text="Operacija")
+        self.drevo_operacije.heading("Podrobnosti", text="Podrobnosti")
+        
+        self.drevo_operacije.column("Št.", width=40)
+        self.drevo_operacije.column("Operacija", width=150)
+        self.drevo_operacije.column("Podrobnosti", width=400)
+        
+        self.drevo_operacije.pack(fill="both", expand=True)
+        
+        # Gumbi za operacije
+        okvir_gumbi = ttk.Frame(okvir_operacije)
+        okvir_gumbi.pack(fill="x", pady=5)
+        
+        ttk.Button(okvir_gumbi, text="Odstrani izbrano", command=self._odstrani_operacijo).pack(side="left", padx=2)
+        ttk.Button(okvir_gumbi, text="Počisti vse", command=self._pocisti_operacije).pack(side="left", padx=2)
+        
+        gumb_izvedi = ttk.Button(okvir_gumbi, text="▶ Izvedi vse", command=self._izvedi_operacije)
+        gumb_izvedi.pack(side="right", padx=2, ipadx=10)
+    
+    def _prikazi_meni_sledi(self, dogodek):
+        """Prikaže kontekstni meni za izbrano sled."""
+        vrstica = self.drevo_sledi.identify_row(dogodek.y)
+        if vrstica:
+            self.drevo_sledi.selection_set(vrstica)
+            self.meni_sledi.post(dogodek.x_root, dogodek.y_root)
+    
+    def _pridobi_izbrano_sled(self):
+        """Vrne podatke o izbrani sledi."""
+        izbrana = self.drevo_sledi.selection()
+        if not izbrana:
+            return None
+        vrednosti = self.drevo_sledi.item(izbrana[0], "values")
+        return {"stevilka": vrednosti[0], "vrsta": vrednosti[1], "kodek": vrednosti[2], 
+                "jezik": vrednosti[3], "naslov": vrednosti[4]}
+    
+    def _dodaj_operacijo(self, tip, podrobnosti, podatki=None):
+        """Doda operacijo v čakalno vrsto."""
+        stevilka = len(self.cakalne_operacije) + 1
+        operacija = {"tip": tip, "podrobnosti": podrobnosti, "podatki": podatki or {}}
+        self.cakalne_operacije.append(operacija)
+        self.drevo_operacije.insert("", "end", values=(stevilka, tip, podrobnosti))
+        self.status.config(text=f"Dodana operacija: {tip}")
+    
+    def _osvezi_seznam_operacij(self):
+        """Osveži prikaz seznama operacij."""
+        for vrstica in self.drevo_operacije.get_children():
+            self.drevo_operacije.delete(vrstica)
+        for i, op in enumerate(self.cakalne_operacije, 1):
+            self.drevo_operacije.insert("", "end", values=(i, op["tip"], op["podrobnosti"]))
+    
+    def _odstrani_operacijo(self):
+        """Odstrani izbrano operacijo iz čakalne vrste."""
+        izbrana = self.drevo_operacije.selection()
+        if izbrana:
+            indeks = self.drevo_operacije.index(izbrana[0])
+            if indeks < len(self.cakalne_operacije):
+                del self.cakalne_operacije[indeks]
+            self._osvezi_seznam_operacij()
+    
+    def _pocisti_operacije(self):
+        """Počisti vse čakajoče operacije."""
+        self.cakalne_operacije.clear()
+        for vrstica in self.drevo_operacije.get_children():
+            self.drevo_operacije.delete(vrstica)
+        self.status.config(text="Operacije počiščene")
+    
+    def _op_odstrani_sled(self):
+        """Doda operacijo za odstranitev sledi."""
+        sled = self._pridobi_izbrano_sled()
+        if sled:
+            self._dodaj_operacijo("Odstrani sled", 
+                f"Sled {sled['stevilka']}: {sled['vrsta']} ({sled['kodek']})",
+                {"stevilka": sled["stevilka"]})
+    
+    def _op_spremeni_jezik(self):
+        """Doda operacijo za spremembo jezika."""
+        sled = self._pridobi_izbrano_sled()
+        if not sled:
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Spremeni jezik")
+        dialog.geometry("300x120")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text="Nov jezik:").pack(pady=10)
+        izbira = ttk.Combobox(dialog, values=[
+            "slv - Slovenščina", "eng - Angleščina", "hrv - Hrvaščina",
+            "srp - Srbščina", "deu - Nemščina", "ita - Italijanščina",
+            "und - Nedoločen"
+        ], width=25)
+        izbira.set("slv - Slovenščina")
+        izbira.pack(pady=5)
+        
+        def potrdi():
+            jezik = izbira.get().split(" - ")[0]
+            self._dodaj_operacijo("Spremeni jezik",
+                f"Sled {sled['stevilka']}: {jezik}",
+                {"stevilka": sled["stevilka"], "jezik": jezik})
+            dialog.destroy()
+        
+        ttk.Button(dialog, text="Potrdi", command=potrdi).pack(pady=10)
+    
+    def _op_spremeni_naslov(self):
+        """Doda operacijo za spremembo naslova."""
+        sled = self._pridobi_izbrano_sled()
+        if not sled:
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Spremeni naslov")
+        dialog.geometry("350x120")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text="Nov naslov:").pack(pady=10)
+        vnos = ttk.Entry(dialog, width=40)
+        vnos.insert(0, sled["naslov"])
+        vnos.pack(pady=5)
+        
+        def potrdi():
+            naslov = vnos.get()
+            self._dodaj_operacijo("Spremeni naslov",
+                f"Sled {sled['stevilka']}: \"{naslov}\"",
+                {"stevilka": sled["stevilka"], "naslov": naslov})
+            dialog.destroy()
+        
+        ttk.Button(dialog, text="Potrdi", command=potrdi).pack(pady=10)
+    
+    def _op_nastavi_privzeto(self):
+        """Doda operacijo za nastavitev privzete sledi."""
+        sled = self._pridobi_izbrano_sled()
+        if sled:
+            self._dodaj_operacijo("Nastavi privzeto",
+                f"Sled {sled['stevilka']}: {sled['vrsta']}",
+                {"stevilka": sled["stevilka"], "vrsta": sled["vrsta"]})
+    
+    def _op_pretvori_zvok(self, kodek):
+        """Doda operacijo za pretvorbo zvoka."""
+        sled = self._pridobi_izbrano_sled()
+        if not sled:
+            return
+        if sled["vrsta"] != "Zvok":
+            messagebox.showwarning("Opozorilo", "Izberite zvočno sled.")
+            return
+        self._dodaj_operacijo("Pretvori zvok",
+            f"Sled {sled['stevilka']}: {sled['kodek']} → {kodek.upper()}",
+            {"stevilka": sled["stevilka"], "kodek": kodek})
+    
+    def _op_dodaj_podnapise(self):
+        """Doda operacijo za dodajanje podnapisov."""
+        if not self.mkv_pot:
+            messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+            return
+        
+        pot = filedialog.askopenfilename(
+            title="Izberi datoteko podnapisov",
+            filetypes=[("Podnapisi", "*.srt *.ass *.ssa *.sub *.vtt"), ("Vse datoteke", "*.*")]
+        )
+        if not pot:
+            return
+        
+        self._prikazi_dialog_podnapisi(pot)
+    
+    def _op_dodaj_zvok(self):
+        """Doda operacijo za dodajanje zvočne sledi."""
+        if not self.mkv_pot:
+            messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+            return
+        
+        pot = filedialog.askopenfilename(
+            title="Izberi zvočno datoteko",
+            filetypes=[("Zvočne datoteke", "*.mp3 *.aac *.ac3 *.flac *.ogg *.wav *.m4a *.opus"), 
+                       ("Vse datoteke", "*.*")]
+        )
+        if not pot:
+            return
+        
+        jezik = self._vprasaj_jezik()
+        self._dodaj_operacijo("Dodaj zvok",
+            f"{Path(pot).name} ({jezik})",
+            {"pot": pot, "jezik": jezik})
+    
+    def _izvedi_operacije(self):
+        """Izvede vse čakajoče operacije."""
+        if not self.mkv_pot:
+            messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+            return
+        
+        if not self.cakalne_operacije:
+            messagebox.showwarning("Opozorilo", "Ni čakajočih operacij.")
+            return
+        
+        if not self.mkvmerge:
+            messagebox.showerror("Napaka", "mkvmerge ni nameščen.")
+            return
+        
+        # Ciljna datoteka
+        osnovni_dir = os.path.dirname(self.mkv_pot)
+        osnovni_ime = Path(self.mkv_pot).stem
+        ciljna_pot = filedialog.asksaveasfilename(
+            title="Shrani kot",
+            initialdir=osnovni_dir,
+            initialfile=f"_{osnovni_ime}.mkv",
+            filetypes=[("MKV datoteke", "*.mkv")]
+        )
+        
+        if not ciljna_pot:
+            return
+        
+        if not ciljna_pot.endswith(".mkv"):
+            ciljna_pot += ".mkv"
+        
+        self._nastavi_zasedeno("Izvajam operacije...")
+        
+        try:
+            # Zberi podatke za mkvmerge
+            sledi_za_odstranitev = set()
+            spremembe_jezika = {}
+            spremembe_naslova = {}
+            privzete_sledi = {"video": None, "audio": None, "subtitle": None}
+            pretvorbe_zvoka = {}
+            dodatne_datoteke = []
+            
+            for op in self.cakalne_operacije:
+                tip = op["tip"]
+                podatki = op["podatki"]
+                
+                if tip == "Odstrani sled":
+                    sledi_za_odstranitev.add(str(podatki["stevilka"]))
+                elif tip == "Spremeni jezik":
+                    spremembe_jezika[str(podatki["stevilka"])] = podatki["jezik"]
+                elif tip == "Spremeni naslov":
+                    spremembe_naslova[str(podatki["stevilka"])] = podatki["naslov"]
+                elif tip == "Nastavi privzeto":
+                    vrsta = podatki["vrsta"].lower()
+                    if vrsta == "zvok":
+                        vrsta = "audio"
+                    elif vrsta == "podnapisi":
+                        vrsta = "subtitle"
+                    privzete_sledi[vrsta] = str(podatki["stevilka"])
+                elif tip == "Pretvori zvok":
+                    pretvorbe_zvoka[str(podatki["stevilka"])] = podatki["kodek"]
+                elif tip == "Dodaj podnapise":
+                    dodatne_datoteke.append({"vrsta": "subtitle", **podatki})
+                elif tip == "Dodaj zvok":
+                    dodatne_datoteke.append({"vrsta": "audio", **podatki})
+            
+            # Če je potrebna pretvorba zvoka, najprej uporabi ffmpeg
+            vhodna_datoteka = self.mkv_pot
+            zacasna_pot = None
+            
+            if pretvorbe_zvoka and self.ffmpeg:
+                self._nastavi_zasedeno("Pretvarjam zvok...")
+                zacasna_pot = ciljna_pot.replace(".mkv", "_temp_audio.mkv")
+                
+                if "flatpak run" in self.ffmpeg:
+                    ukaz_ff = self.ffmpeg.split() + ["-i", self.mkv_pot, "-y"]
+                else:
+                    ukaz_ff = [self.ffmpeg, "-i", self.mkv_pot, "-y"]
+                
+                # Kopiraj vse sledi, pretvori le označene
+                ukaz_ff.extend(["-map", "0", "-c", "copy"])
+                
+                for stevilka, kodek in pretvorbe_zvoka.items():
+                    kodeki_map = {"aac": "aac", "ac3": "ac3", "mp3": "libmp3lame"}
+                    ukaz_ff.extend([f"-c:{stevilka}", kodeki_map.get(kodek, "aac")])
+                    if kodek != "flac":
+                        ukaz_ff.extend([f"-b:{stevilka}", "192k"])
+                
+                ukaz_ff.append(zacasna_pot)
+                subprocess.run(ukaz_ff, check=True, capture_output=True)
+                vhodna_datoteka = zacasna_pot
+            
+            self._nastavi_zasedeno("Združujem s pomočjo mkvmerge...")
+            
+            # Pripravi mkvmerge ukaz
+            if "flatpak run" in self.mkvmerge:
+                ukaz = self.mkvmerge.split() + ["-o", ciljna_pot]
+            else:
+                ukaz = [self.mkvmerge, "-o", ciljna_pot]
+            
+            # Sledi za odstranitev
+            if sledi_za_odstranitev:
+                vse_sledi = self._pridobi_informacije()
+                video_sledi = [str(s["index"]) for s in vse_sledi if s.get("codec_type") == "video" and str(s["index"]) not in sledi_za_odstranitev]
+                audio_sledi = [str(s["index"]) for s in vse_sledi if s.get("codec_type") == "audio" and str(s["index"]) not in sledi_za_odstranitev]
+                sub_sledi = [str(s["index"]) for s in vse_sledi if s.get("codec_type") == "subtitle" and str(s["index"]) not in sledi_za_odstranitev]
+                
+                if video_sledi:
+                    ukaz.extend(["-d", ",".join(video_sledi)])
+                else:
+                    ukaz.extend(["-D"])
+                if audio_sledi:
+                    ukaz.extend(["-a", ",".join(audio_sledi)])
+                else:
+                    ukaz.extend(["-A"])
+                if sub_sledi:
+                    ukaz.extend(["-s", ",".join(sub_sledi)])
+                else:
+                    ukaz.extend(["-S"])
+            
+            # Spremembe jezika
+            for stevilka, jezik in spremembe_jezika.items():
+                ukaz.extend(["--language", f"{stevilka}:{jezik}"])
+            
+            # Spremembe naslova
+            for stevilka, naslov in spremembe_naslova.items():
+                ukaz.extend(["--track-name", f"{stevilka}:{naslov}"])
+            
+            # Privzete sledi
+            for vrsta, stevilka in privzete_sledi.items():
+                if stevilka:
+                    ukaz.extend(["--default-track", f"{stevilka}:yes"])
+            
+            ukaz.append(vhodna_datoteka)
+            
+            # Dodatne datoteke
+            for dat in dodatne_datoteke:
+                if dat.get("jezik"):
+                    ukaz.extend(["--language", f"0:{dat['jezik']}"])
+                if dat.get("privzet"):
+                    ukaz.extend(["--default-track", "0:yes"])
+                ukaz.append(dat["pot"])
+            
+            subprocess.run(ukaz, check=True, capture_output=True)
+            
+            # Počisti začasne datoteke
+            if zacasna_pot and os.path.exists(zacasna_pot):
+                os.remove(zacasna_pot)
+            
+            self._pocisti_operacije()
+            self._nastavi_prosto("Operacije uspešno izvedene.")
+            messagebox.showinfo("Uspeh", f"Vse operacije uspešno izvedene!\n\nShranjeno v:\n{ciljna_pot}")
+            
+        except subprocess.CalledProcessError as e:
+            napaka = e.stderr.decode() if e.stderr else str(e)
+            self._nastavi_prosto("Napaka pri izvajanju.")
+            messagebox.showerror("Napaka", f"Napaka pri izvajanju operacij:\n{napaka}")
+    
+    def _ustvari_podnapisi(self, okvir):
+        """Ustvari zavihek za dodajanje podnapisov."""
+        # Izbira datoteke podnapisov
+        okvir_podnapis = ttk.LabelFrame(okvir, text="Datoteka podnapisov", padding=10)
+        okvir_podnapis.pack(fill="x", pady=5)
+        
+        self.vnos_podnapis = ttk.Entry(okvir_podnapis, width=60)
+        self.vnos_podnapis.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        ttk.Button(okvir_podnapis, text="Izberi", command=self._izberi_podnapis).pack(side="left")
+        
+        # Nastavitve
+        okvir_nastavitve = ttk.LabelFrame(okvir, text="Nastavitve", padding=10)
+        okvir_nastavitve.pack(fill="x", pady=5)
+        
+        ttk.Label(okvir_nastavitve, text="Jezik:").grid(row=0, column=0, sticky="w", pady=5)
+        self.jezik_podnapis = ttk.Combobox(okvir_nastavitve, values=[
+            "slv - Slovenščina", "eng - Angleščina", "hrv - Hrvaščina",
+            "srp - Srbščina", "deu - Nemščina", "ita - Italijanščina"
+        ], width=30)
+        self.jezik_podnapis.set("slv - Slovenščina")
+        self.jezik_podnapis.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        
+        ttk.Label(okvir_nastavitve, text="Naslov:").grid(row=1, column=0, sticky="w", pady=5)
+        self.naslov_podnapis = ttk.Entry(okvir_nastavitve, width=33)
+        self.naslov_podnapis.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        
+        self.privzet_podnapis = tk.BooleanVar()
+        ttk.Checkbutton(okvir_nastavitve, text="Nastavi kot privzet podnapis",
+                        variable=self.privzet_podnapis).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
+        
+        ttk.Button(okvir, text="Dodaj podnapise", command=self._dodaj_podnapise).pack(pady=20)
+    
+    def _ustvari_pretvorbo(self, okvir):
+        """Ustvari zavihek za pretvorbo."""
+        # Audio pretvorba
+        okvir_avdio = ttk.LabelFrame(okvir, text="Pretvorba zvoka", padding=10)
+        okvir_avdio.pack(fill="x", pady=5)
+        
+        ttk.Label(okvir_avdio, text="Ciljni format:").grid(row=0, column=0, sticky="w", pady=5)
+        self.avdio_format = ttk.Combobox(okvir_avdio, values=[
+            "aac", "ac3", "mp3", "opus", "flac", "vorbis", "kopija (brez pretvorbe)"
+        ], width=25)
+        self.avdio_format.set("aac")
+        self.avdio_format.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        
+        ttk.Label(okvir_avdio, text="Bitna hitrost:").grid(row=1, column=0, sticky="w", pady=5)
+        self.avdio_bitrate = ttk.Combobox(okvir_avdio, values=[
+            "64k", "128k", "192k", "256k", "320k"
+        ], width=25)
+        self.avdio_bitrate.set("192k")
+        self.avdio_bitrate.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        
+        # Video pretvorba
+        okvir_video = ttk.LabelFrame(okvir, text="Pretvorba videa", padding=10)
+        okvir_video.pack(fill="x", pady=5)
+        
+        ttk.Label(okvir_video, text="Ciljni format:").grid(row=0, column=0, sticky="w", pady=5)
+        self.video_format = ttk.Combobox(okvir_video, values=[
+            "h264", "h265/hevc", "vp9", "av1", "kopija (brez pretvorbe)"
+        ], width=25)
+        self.video_format.set("kopija (brez pretvorbe)")
+        self.video_format.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        
+        ttk.Label(okvir_video, text="Kakovost (CRF):").grid(row=1, column=0, sticky="w", pady=5)
+        self.video_crf = ttk.Combobox(okvir_video, values=[
+            "18 (visoka)", "23 (srednja)", "28 (nizka)"
+        ], width=25)
+        self.video_crf.set("23 (srednja)")
+        self.video_crf.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        
+        ttk.Button(okvir, text="Pretvori in shrani", command=self._pretvori).pack(pady=20)
+    
+    def _ustvari_odstranitev(self, okvir):
+        """Ustvari zavihek za odstranjevanje sledi."""
+        ttk.Label(okvir, text="Označite sledi za odstranitev:").pack(anchor="w", pady=5)
+        
+        stolpci = ("Izberi", "Št.", "Vrsta", "Kodek", "Jezik")
+        self.drevo_odstrani = ttk.Treeview(okvir, columns=stolpci, show="headings", height=6)
+        
+        for stolpec in stolpci:
+            self.drevo_odstrani.heading(stolpec, text=stolpec)
+        
+        self.drevo_odstrani.column("Izberi", width=60)
+        self.drevo_odstrani.column("Št.", width=50)
+        self.drevo_odstrani.column("Vrsta", width=100)
+        self.drevo_odstrani.column("Kodek", width=150)
+        self.drevo_odstrani.column("Jezik", width=100)
+        
+        self.drevo_odstrani.pack(fill="both", expand=True, pady=5)
+        self.drevo_odstrani.bind("<Button-1>", self._preklopi_izbiro)
+        
+        self.izbrane_za_odstranitev = set()
+        
+        okvir_gumbi = ttk.Frame(okvir)
+        okvir_gumbi.pack(fill="x", pady=10)
+        
+        ttk.Button(okvir_gumbi, text="Osveži seznam", command=self._osvezi_odstranitev).pack(side="left", padx=5)
+        ttk.Button(okvir_gumbi, text="Odstrani označene sledi", command=self._odstrani_sledi).pack(side="left", padx=5)
+    
+    def _ustvari_izdelavo(self, okvir):
+        """Ustvari zavihek za izdelavo novega MKV."""
+        # Seznam vhodnih datotek
+        okvir_seznam = ttk.LabelFrame(okvir, text="Vhodne datoteke", padding=10)
+        okvir_seznam.pack(fill="both", expand=True, pady=5)
+        
+        stolpci = ("Vrsta", "Datoteka", "Jezik")
+        self.drevo_vhod = ttk.Treeview(okvir_seznam, columns=stolpci, show="headings", height=5)
+        
+        self.drevo_vhod.heading("Vrsta", text="Vrsta")
+        self.drevo_vhod.heading("Datoteka", text="Datoteka")
+        self.drevo_vhod.heading("Jezik", text="Jezik")
+        
+        self.drevo_vhod.column("Vrsta", width=80)
+        self.drevo_vhod.column("Datoteka", width=450)
+        self.drevo_vhod.column("Jezik", width=80)
+        
+        drsnik = ttk.Scrollbar(okvir_seznam, orient="vertical", command=self.drevo_vhod.yview)
+        self.drevo_vhod.configure(yscrollcommand=drsnik.set)
+        
+        self.drevo_vhod.pack(side="left", fill="both", expand=True)
+        drsnik.pack(side="right", fill="y")
+        
+        self.vhodne_datoteke = []
+        
+        # Gumbi za dodajanje
+        okvir_dodaj = ttk.Frame(okvir)
+        okvir_dodaj.pack(fill="x", pady=5)
+        
+        ttk.Button(okvir_dodaj, text="Dodaj video", 
+                   command=lambda: self._dodaj_vhodno("video")).pack(side="left", padx=5)
+        ttk.Button(okvir_dodaj, text="Dodaj zvok", 
+                   command=lambda: self._dodaj_vhodno("audio")).pack(side="left", padx=5)
+        ttk.Button(okvir_dodaj, text="Dodaj podnapise", 
+                   command=lambda: self._dodaj_vhodno("podnapisi")).pack(side="left", padx=5)
+        ttk.Button(okvir_dodaj, text="Odstrani izbrano", 
+                   command=self._odstrani_vhodno).pack(side="left", padx=5)
+        ttk.Button(okvir_dodaj, text="Počisti vse", 
+                   command=self._pocisti_vhodne).pack(side="left", padx=5)
+        
+        # Nastavitve
+        okvir_nastavitve = ttk.LabelFrame(okvir, text="Nastavitve", padding=10)
+        okvir_nastavitve.pack(fill="x", pady=5)
+        
+        ttk.Label(okvir_nastavitve, text="Naslov:").grid(row=0, column=0, sticky="w", pady=5)
+        self.mkv_naslov = ttk.Entry(okvir_nastavitve, width=50)
+        self.mkv_naslov.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        
+        self.kopiraj_metapodatke = tk.BooleanVar(value=True)
+        ttk.Checkbutton(okvir_nastavitve, text="Kopiraj metapodatke",
+                        variable=self.kopiraj_metapodatke).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+        
+        ttk.Button(okvir, text="Ustvari MKV", command=self._ustvari_mkv).pack(pady=15)
+    
+    def _dodaj_vhodno(self, vrsta):
+        """Dodaj vhodno datoteko za izdelavo MKV."""
+        if vrsta == "video":
+            tipi = [("Video datoteke", "*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpeg *.mpg"),
+                    ("Vse datoteke", "*.*")]
+            naslov = "Izberi video datoteko"
+        elif vrsta == "audio":
+            tipi = [("Zvočne datoteke", "*.mp3 *.aac *.ac3 *.flac *.ogg *.wav *.m4a *.opus *.dts *.eac3"),
+                    ("Vse datoteke", "*.*")]
+            naslov = "Izberi zvočno datoteko"
+        else:
+            tipi = [("Podnapisi", "*.srt *.ass *.ssa *.sub *.txt *.vtt"),
+                    ("Vse datoteke", "*.*")]
+            naslov = "Izberi datoteko podnapisov"
+        
+        pot = filedialog.askopenfilename(title=naslov, filetypes=tipi)
+        if pot:
+            # Vprašaj za jezik
+            jezik = self._vprasaj_jezik()
+            
+            self.vhodne_datoteke.append({"vrsta": vrsta, "pot": pot, "jezik": jezik})
+            self.drevo_vhod.insert("", "end", values=(
+                vrsta.capitalize() if vrsta != "audio" else "Zvok",
+                Path(pot).name,
+                jezik
+            ))
+    
+    def _vprasaj_jezik(self):
+        """Odpre dialog za izbiro jezika."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Izberi jezik")
+        dialog.geometry("300x120")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text="Jezik sledi:").pack(pady=10)
+        
+        izbira = ttk.Combobox(dialog, values=[
+            "und - Nedoločen", "slv - Slovenščina", "eng - Angleščina", 
+            "hrv - Hrvaščina", "srp - Srbščina", "deu - Nemščina", 
+            "ita - Italijanščina", "fra - Francoščina", "spa - Španščina"
+        ], width=25)
+        izbira.set("und - Nedoločen")
+        izbira.pack(pady=5)
+        
+        rezultat = ["und"]
+        
+        def potrdi():
+            rezultat[0] = izbira.get().split(" - ")[0]
+            dialog.destroy()
+        
+        ttk.Button(dialog, text="Potrdi", command=potrdi).pack(pady=10)
+        
+        dialog.wait_window()
+        return rezultat[0]
+    
+    def _odstrani_vhodno(self):
+        """Odstrani izbrano vhodno datoteko."""
+        izbrana = self.drevo_vhod.selection()
+        if izbrana:
+            indeks = self.drevo_vhod.index(izbrana[0])
+            self.drevo_vhod.delete(izbrana[0])
+            if indeks < len(self.vhodne_datoteke):
+                del self.vhodne_datoteke[indeks]
+    
+    def _pocisti_vhodne(self):
+        """Počisti vse vhodne datoteke."""
+        for vrstica in self.drevo_vhod.get_children():
+            self.drevo_vhod.delete(vrstica)
+        self.vhodne_datoteke.clear()
+    
+    def _ustvari_mkv(self):
+        """Ustvari novo MKV datoteko iz vhodnih datotek."""
+        if not self.vhodne_datoteke:
+            messagebox.showwarning("Opozorilo", "Dodajte vsaj eno vhodno datoteko.")
+            return
+        
+        # Preveri, da je vsaj en video
+        ima_video = any(d["vrsta"] == "video" for d in self.vhodne_datoteke)
+        if not ima_video:
+            if not messagebox.askyesno("Brez videa", 
+                    "Niste dodali video datoteke. Želite nadaljevati?"):
+                return
+        
+        if not self.mkvmerge:
+            messagebox.showerror("Napaka", "mkvmerge ni nameščen.")
+            return
+        
+        # Ciljna datoteka
+        ciljna_pot = filedialog.asksaveasfilename(
+            title="Shrani MKV kot",
+            initialfile="nov_video.mkv",
+            filetypes=[("MKV datoteke", "*.mkv")]
+        )
+        
+        if not ciljna_pot:
+            return
+        
+        if not ciljna_pot.endswith(".mkv"):
+            ciljna_pot += ".mkv"
+        
+        self._nastavi_zasedeno("Ustvarjam MKV...")
+        
+        try:
+            if "flatpak run" in self.mkvmerge:
+                ukaz = self.mkvmerge.split() + ["-o", ciljna_pot]
+            else:
+                ukaz = [self.mkvmerge, "-o", ciljna_pot]
+            
+            # Naslov
+            naslov = self.mkv_naslov.get()
+            if naslov:
+                ukaz.extend(["--title", naslov])
+            
+            # Dodaj vhodne datoteke
+            for datoteka in self.vhodne_datoteke:
+                pot = datoteka["pot"]
+                jezik = datoteka["jezik"]
+                
+                if jezik and jezik != "und":
+                    ukaz.extend(["--language", f"0:{jezik}"])
+                
+                ukaz.append(pot)
+            
+            subprocess.run(ukaz, check=True, capture_output=True)
+            self._nastavi_prosto("MKV ustvarjen.")
+            messagebox.showinfo("Uspeh", f"MKV uspešno ustvarjen!\n\nShranjeno v:\n{ciljna_pot}")
+        except subprocess.CalledProcessError as e:
+            napaka = e.stderr.decode() if e.stderr else str(e)
+            self._nastavi_prosto("Napaka pri ustvarjanju.")
+            messagebox.showerror("Napaka", f"Napaka pri ustvarjanju MKV:\n{napaka}")
+    
+    def _ustvari_hitro_pretvorbo(self, okvir):
+        """Ustvari zavihek za hitro pretvorbo v MKV."""
+        ttk.Label(okvir, text="Hitro pretvori video datoteko v MKV z avtomatskim zaznavanjem podnapisov.",
+                  wraplength=600).pack(anchor="w", pady=5)
+        
+        # Izbira video datoteke
+        okvir_video = ttk.LabelFrame(okvir, text="Video datoteka", padding=10)
+        okvir_video.pack(fill="x", pady=5)
+        
+        self.vnos_hitro_video = ttk.Entry(okvir_video, width=60)
+        self.vnos_hitro_video.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        ttk.Button(okvir_video, text="Izberi", command=self._izberi_hitro_video).pack(side="left")
+        
+        # Najdene datoteke
+        okvir_najdene = ttk.LabelFrame(okvir, text="Najdene povezane datoteke", padding=10)
+        okvir_najdene.pack(fill="both", expand=True, pady=5)
+        
+        stolpci = ("Uporabi", "Vrsta", "Datoteka")
+        self.drevo_hitro = ttk.Treeview(okvir_najdene, columns=stolpci, show="headings", height=5)
+        
+        self.drevo_hitro.heading("Uporabi", text="Uporabi")
+        self.drevo_hitro.heading("Vrsta", text="Vrsta")
+        self.drevo_hitro.heading("Datoteka", text="Datoteka")
+        
+        self.drevo_hitro.column("Uporabi", width=60)
+        self.drevo_hitro.column("Vrsta", width=100)
+        self.drevo_hitro.column("Datoteka", width=450)
+        
+        self.drevo_hitro.pack(fill="both", expand=True)
+        self.drevo_hitro.bind("<Button-1>", self._preklopi_hitro_izbiro)
+        
+        self.hitro_datoteke = []
+        self.hitro_izbrane = set()
+        
+        # Nastavitve
+        okvir_nast = ttk.LabelFrame(okvir, text="Nastavitve", padding=10)
+        okvir_nast.pack(fill="x", pady=5)
+        
+        ttk.Label(okvir_nast, text="Jezik podnapisov:").grid(row=0, column=0, sticky="w", pady=5)
+        self.hitro_jezik = ttk.Combobox(okvir_nast, values=[
+            "slv - Slovenščina", "eng - Angleščina", "hrv - Hrvaščina",
+            "und - Nedoločen"
+        ], width=25)
+        self.hitro_jezik.set("slv - Slovenščina")
+        self.hitro_jezik.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        
+        self.hitro_privzet = tk.BooleanVar(value=True)
+        ttk.Checkbutton(okvir_nast, text="Podnapisi kot privzeti",
+                        variable=self.hitro_privzet).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+        
+        self.hitro_kopiraj = tk.BooleanVar(value=True)
+        ttk.Checkbutton(okvir_nast, text="Kopiraj video brez ponovnega kodiranja (hitrejše)",
+                        variable=self.hitro_kopiraj).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
+        
+        self.hitro_aac = tk.BooleanVar(value=True)
+        ttk.Checkbutton(okvir_nast, text="Pretvori zvok v AAC (če ni že AAC)",
+                        variable=self.hitro_aac).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
+        
+        # Okvir za gumb na dnu
+        okvir_gumb = ttk.Frame(okvir)
+        okvir_gumb.pack(fill="x", pady=10)
+        
+        gumb_pretvori = ttk.Button(okvir_gumb, text="▶ Pretvori v MKV", command=self._izvedi_hitro_pretvorbo)
+        gumb_pretvori.pack(pady=5, ipadx=20, ipady=5)
+    
+    def _izberi_hitro_video(self):
+        """Izbere video datoteko in poišče povezane podnapise."""
+        pot = filedialog.askopenfilename(
+            title="Izberi video datoteko",
+            filetypes=[
+                ("Video datoteke", "*.mp4 *.avi *.mov *.wmv *.flv *.webm *.m4v *.mpeg *.mpg *.mkv"),
+                ("Vse datoteke", "*.*")
+            ]
+        )
+        if not pot:
+            return
+        
+        self.vnos_hitro_video.delete(0, tk.END)
+        self.vnos_hitro_video.insert(0, pot)
+        
+        # Počisti prejšnje
+        for vrstica in self.drevo_hitro.get_children():
+            self.drevo_hitro.delete(vrstica)
+        self.hitro_datoteke.clear()
+        self.hitro_izbrane.clear()
+        
+        # Poišči povezane datoteke
+        mapa = os.path.dirname(pot)
+        osnovni_ime = Path(pot).stem
+        
+        # Končnice podnapisov
+        koncnice_sub = [".srt", ".ass", ".ssa", ".sub", ".vtt", ".txt"]
+        # Končnice zvoka
+        koncnice_audio = [".mp3", ".aac", ".ac3", ".flac", ".ogg", ".wav", ".m4a", ".opus", ".dts"]
+        
+        najdene = []
+        
+        # Poišči datoteke z istim osnovnim imenom
+        for datoteka in os.listdir(mapa):
+            dat_pot = os.path.join(mapa, datoteka)
+            if not os.path.isfile(dat_pot) or dat_pot == pot:
+                continue
+            
+            dat_stem = Path(datoteka).stem
+            dat_suffix = Path(datoteka).suffix.lower()
+            
+            # Preveri ali se ime ujema (tudi z dodatki kot .sl, .en, itd.)
+            if dat_stem == osnovni_ime or dat_stem.startswith(osnovni_ime + ".") or dat_stem.startswith(osnovni_ime + "_"):
+                if dat_suffix in koncnice_sub:
+                    najdene.append({"vrsta": "Podnapisi", "pot": dat_pot, "ime": datoteka})
+                elif dat_suffix in koncnice_audio:
+                    najdene.append({"vrsta": "Zvok", "pot": dat_pot, "ime": datoteka})
+        
+        # Dodaj video
+        self.hitro_datoteke.append({"vrsta": "Video", "pot": pot, "ime": Path(pot).name})
+        self.hitro_izbrane.add("0")
+        self.drevo_hitro.insert("", "end", iid="0", values=("☑", "Video", Path(pot).name))
+        
+        # Dodaj najdene
+        for i, dat in enumerate(najdene, start=1):
+            self.hitro_datoteke.append(dat)
+            self.hitro_izbrane.add(str(i))
+            self.drevo_hitro.insert("", "end", iid=str(i), values=("☑", dat["vrsta"], dat["ime"]))
+        
+        stevilo_sub = sum(1 for d in najdene if d["vrsta"] == "Podnapisi")
+        self.status.config(text=f"Najdenih {len(najdene)} povezanih datotek ({stevilo_sub} podnapisov)")
+    
+    def _preklopi_hitro_izbiro(self, dogodek):
+        """Preklopi izbiro datoteke."""
+        vrstica = self.drevo_hitro.identify_row(dogodek.y)
+        stolpec = self.drevo_hitro.identify_column(dogodek.x)
+        
+        if vrstica and stolpec == "#1":
+            if vrstica in self.hitro_izbrane:
+                self.hitro_izbrane.discard(vrstica)
+                vrednosti = list(self.drevo_hitro.item(vrstica, "values"))
+                vrednosti[0] = "☐"
+                self.drevo_hitro.item(vrstica, values=vrednosti)
+            else:
+                self.hitro_izbrane.add(vrstica)
+                vrednosti = list(self.drevo_hitro.item(vrstica, "values"))
+                vrednosti[0] = "☑"
+                self.drevo_hitro.item(vrstica, values=vrednosti)
+    
+    def _pridobi_audio_kodek(self, pot):
+        """Pridobi audio kodek iz datoteke."""
+        if not self.ffprobe:
+            return None
+        
+        try:
+            if "flatpak run" in self.ffprobe:
+                deli = self.ffprobe.split()
+                ukaz = deli + ["-v", "quiet", "-select_streams", "a:0", 
+                              "-show_entries", "stream=codec_name", 
+                              "-of", "default=noprint_wrappers=1:nokey=1", pot]
+            else:
+                ukaz = [self.ffprobe, "-v", "quiet", "-select_streams", "a:0",
+                       "-show_entries", "stream=codec_name",
+                       "-of", "default=noprint_wrappers=1:nokey=1", pot]
+            
+            rezultat = subprocess.run(ukaz, capture_output=True, text=True, check=True)
+            return rezultat.stdout.strip()
+        except Exception:
+            return None
+    
+    def _izvedi_hitro_pretvorbo(self):
+        """Izvede hitro pretvorbo v MKV."""
+        if not self.hitro_datoteke:
+            messagebox.showwarning("Opozorilo", "Najprej izberite video datoteko.")
+            return
+        
+        if not self.hitro_izbrane:
+            messagebox.showwarning("Opozorilo", "Označite vsaj eno datoteko.")
+            return
+        
+        if not self.mkvmerge:
+            messagebox.showerror("Napaka", "mkvmerge ni nameščen.")
+            return
+        
+        # Izbrane datoteke
+        izbrane = [self.hitro_datoteke[int(i)] for i in sorted(self.hitro_izbrane, key=int) 
+                   if int(i) < len(self.hitro_datoteke)]
+        
+        if not any(d["vrsta"] == "Video" for d in izbrane):
+            messagebox.showwarning("Opozorilo", "Označite video datoteko.")
+            return
+        
+        # Ciljna datoteka
+        video_pot = next(d["pot"] for d in izbrane if d["vrsta"] == "Video")
+        osnovni_dir = os.path.dirname(video_pot)
+        osnovni_ime = Path(video_pot).stem
+        
+        ciljna_pot = filedialog.asksaveasfilename(
+            title="Shrani MKV kot",
+            initialdir=osnovni_dir,
+            initialfile=f"{osnovni_ime}.mkv",
+            filetypes=[("MKV datoteke", "*.mkv")]
+        )
+        
+        if not ciljna_pot:
+            return
+        
+        if not ciljna_pot.endswith(".mkv"):
+            ciljna_pot += ".mkv"
+        
+        self._nastavi_zasedeno("Pretvarjam v MKV...")
+        
+        try:
+            # Preveri audio kodek
+            video_pot = next(d["pot"] for d in izbrane if d["vrsta"] == "Video")
+            audio_kodek = self._pridobi_audio_kodek(video_pot)
+            potrebna_pretvorba_audio = self.hitro_aac.get() and audio_kodek and audio_kodek.lower() not in ["aac"]
+            
+            jezik = self.hitro_jezik.get().split(" - ")[0] if self.hitro_jezik.get() else "und"
+            
+            # Če je potrebna pretvorba audio, uporabi ffmpeg najprej
+            if potrebna_pretvorba_audio and self.ffmpeg:
+                self._nastavi_zasedeno("Pretvarjam zvok v AAC...")
+                
+                # Začasna datoteka za pretvorjen video
+                zacasna_pot = ciljna_pot.replace(".mkv", "_temp.mkv")
+                
+                if "flatpak run" in self.ffmpeg:
+                    ukaz_ff = self.ffmpeg.split() + ["-i", video_pot, "-y"]
+                else:
+                    ukaz_ff = [self.ffmpeg, "-i", video_pot, "-y"]
+                
+                # Kopiraj video, pretvori audio
+                if self.hitro_kopiraj.get():
+                    ukaz_ff.extend(["-c:v", "copy"])
+                else:
+                    ukaz_ff.extend(["-c:v", "libx264", "-crf", "23"])
+                
+                ukaz_ff.extend(["-c:a", "aac", "-b:a", "192k"])
+                ukaz_ff.append(zacasna_pot)
+                
+                subprocess.run(ukaz_ff, check=True, capture_output=True)
+                
+                # Posodobi pot videa
+                for dat in izbrane:
+                    if dat["vrsta"] == "Video":
+                        dat["pot"] = zacasna_pot
+                        dat["zacasna"] = True
+                        break
+            
+            self._nastavi_zasedeno("Združujem v MKV...")
+            
+            # Združi z mkvmerge
+            if "flatpak run" in self.mkvmerge:
+                ukaz = self.mkvmerge.split() + ["-o", ciljna_pot]
+            else:
+                ukaz = [self.mkvmerge, "-o", ciljna_pot]
+            
+            # Dodaj datoteke
+            for dat in izbrane:
+                if dat["vrsta"] == "Podnapisi":
+                    if jezik:
+                        ukaz.extend(["--language", f"0:{jezik}"])
+                    if self.hitro_privzet.get():
+                        ukaz.extend(["--default-track", "0:yes"])
+                
+                ukaz.append(dat["pot"])
+            
+            subprocess.run(ukaz, check=True, capture_output=True)
+            
+            # Počisti začasne datoteke
+            for dat in izbrane:
+                if dat.get("zacasna") and os.path.exists(dat["pot"]):
+                    os.remove(dat["pot"])
+            
+            self._nastavi_prosto("Pretvorba končana.")
+            messagebox.showinfo("Uspeh", f"MKV uspešno ustvarjen!\n\nShranjeno v:\n{ciljna_pot}")
+        except subprocess.CalledProcessError as e:
+            napaka = e.stderr.decode() if e.stderr else str(e)
+            self._nastavi_prosto("Napaka pri pretvorbi.")
+            messagebox.showerror("Napaka", f"Napaka pri pretvorbi:\n{napaka}")
+    
+    def _odpri_mkv(self):
+        """Odpre dialog za izbiro MKV datoteke."""
+        pot = filedialog.askopenfilename(
+            title="Izberi MKV datoteko",
+            filetypes=[("MKV datoteke", "*.mkv"), ("Vse datoteke", "*.*")]
+        )
+        if pot:
+            self.mkv_pot = pot
+            self.vnos_pot.delete(0, tk.END)
+            self.vnos_pot.insert(0, pot)
+            self._osvezi_sledi()
+            self._osvezi_odstranitev()
+            self.status.config(text=f"Odprto: {Path(pot).name}")
+    
+    def _zaženi_ukaz(self, ukaz):
+        """Zažene ukaz, podpira tudi flatpak ukaze."""
+        if isinstance(ukaz, list) and ukaz and "flatpak run" in str(ukaz[0]):
+            # Flatpak ukaz - razbij prvi element
+            flatpak_deli = ukaz[0].split()
+            return flatpak_deli + ukaz[1:]
+        return ukaz
+    
+    def _pridobi_informacije(self):
+        """Pridobi informacije o sledeh v MKV datoteki."""
+        if not self.mkv_pot or not self.ffprobe:
+            return []
+        
+        try:
+            if "flatpak run" in self.ffprobe:
+                deli = self.ffprobe.split()
+                ukaz = deli + ["-v", "quiet", "-print_format", "json", "-show_streams", self.mkv_pot]
+            else:
+                ukaz = [
+                    self.ffprobe, "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_streams",
+                    self.mkv_pot
+                ]
+            rezultat = subprocess.run(ukaz, capture_output=True, text=True, check=True)
+            podatki = json.loads(rezultat.stdout)
+            return podatki.get("streams", [])
+        except Exception as e:
+            messagebox.showerror("Napaka", f"Napaka pri branju datoteke:\n{e}")
+            return []
+    
+    def _osvezi_sledi(self):
+        """Osveži seznam sledi."""
+        for vrstica in self.drevo_sledi.get_children():
+            self.drevo_sledi.delete(vrstica)
+        
+        self.stevilke_sledi = []
+        sledi = self._pridobi_informacije()
+        
+        prevod_vrste = {"video": "Video", "audio": "Zvok", "subtitle": "Podnapisi"}
+        
+        for sled in sledi:
+            stevilka = sled.get("index", "?")
+            vrsta = prevod_vrste.get(sled.get("codec_type", ""), sled.get("codec_type", ""))
+            kodek = sled.get("codec_name", "neznan")
+            jezik = sled.get("tags", {}).get("language", "")
+            naslov = sled.get("tags", {}).get("title", "")
+            
+            self.drevo_sledi.insert("", "end", values=(stevilka, vrsta, kodek, jezik, naslov))
+            self.stevilke_sledi.append(stevilka)
+    
+    def _osvezi_odstranitev(self):
+        """Osveži seznam sledi za odstranitev."""
+        for vrstica in self.drevo_odstrani.get_children():
+            self.drevo_odstrani.delete(vrstica)
+        
+        self.izbrane_za_odstranitev.clear()
+        sledi = self._pridobi_informacije()
+        
+        prevod_vrste = {"video": "Video", "audio": "Zvok", "subtitle": "Podnapisi"}
+        
+        for sled in sledi:
+            stevilka = sled.get("index", "?")
+            vrsta = prevod_vrste.get(sled.get("codec_type", ""), sled.get("codec_type", ""))
+            kodek = sled.get("codec_name", "neznan")
+            jezik = sled.get("tags", {}).get("language", "")
+            
+            self.drevo_odstrani.insert("", "end", iid=str(stevilka),
+                                       values=("☐", stevilka, vrsta, kodek, jezik))
+    
+    def _preklopi_izbiro(self, dogodek):
+        """Preklopi izbiro sledi za odstranitev."""
+        vrstica = self.drevo_odstrani.identify_row(dogodek.y)
+        stolpec = self.drevo_odstrani.identify_column(dogodek.x)
+        
+        if vrstica and stolpec == "#1":
+            if vrstica in self.izbrane_za_odstranitev:
+                self.izbrane_za_odstranitev.discard(vrstica)
+                vrednosti = list(self.drevo_odstrani.item(vrstica, "values"))
+                vrednosti[0] = "☐"
+                self.drevo_odstrani.item(vrstica, values=vrednosti)
+            else:
+                self.izbrane_za_odstranitev.add(vrstica)
+                vrednosti = list(self.drevo_odstrani.item(vrstica, "values"))
+                vrednosti[0] = "☑"
+                self.drevo_odstrani.item(vrstica, values=vrednosti)
+    
+    def _izberi_podnapis(self):
+        """Odpre dialog za izbiro datoteke podnapisov."""
+        pot = filedialog.askopenfilename(
+            title="Izberi datoteko podnapisov",
+            filetypes=[
+                ("Podnapisi", "*.srt *.ass *.ssa *.sub *.txt"),
+                ("SRT podnapisi", "*.srt"),
+                ("ASS/SSA podnapisi", "*.ass *.ssa"),
+                ("Vse datoteke", "*.*")
+            ]
+        )
+        if pot:
+            self.vnos_podnapis.delete(0, tk.END)
+            self.vnos_podnapis.insert(0, pot)
+    
+    def _dodaj_podnapise(self):
+        """Doda podnapise v MKV datoteko."""
+        if not self.mkv_pot:
+            messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+            return
+        
+        pot_podnapis = self.vnos_podnapis.get()
+        if not pot_podnapis or not os.path.exists(pot_podnapis):
+            messagebox.showwarning("Opozorilo", "Izberite veljavno datoteko podnapisov.")
+            return
+        
+        if not self.mkvmerge:
+            messagebox.showerror("Napaka", "mkvmerge ni nameščen.")
+            return
+        
+        # Ciljna datoteka
+        osnovni_dir = os.path.dirname(self.mkv_pot)
+        osnovni_ime = Path(self.mkv_pot).stem
+        ciljna_pot = filedialog.asksaveasfilename(
+            title="Shrani kot",
+            initialdir=osnovni_dir,
+            initialfile=f"_{osnovni_ime}.mkv",
+            filetypes=[("MKV datoteke", "*.mkv")]
+        )
+        
+        if not ciljna_pot:
+            return
+        
+        # Jezik
+        jezik = self.jezik_podnapis.get().split(" - ")[0] if self.jezik_podnapis.get() else "und"
+        naslov = self.naslov_podnapis.get()
+        
+        self._nastavi_zasedeno("Dodajam podnapise...")
+        
+        try:
+            if "flatpak run" in self.mkvmerge:
+                ukaz = self.mkvmerge.split() + ["-o", ciljna_pot, self.mkv_pot]
+            else:
+                ukaz = [self.mkvmerge, "-o", ciljna_pot, self.mkv_pot]
+            
+            if jezik:
+                ukaz.extend(["--language", f"0:{jezik}"])
+            if naslov:
+                ukaz.extend(["--track-name", f"0:{naslov}"])
+            if self.privzet_podnapis.get():
+                ukaz.extend(["--default-track", "0:yes"])
+            
+            ukaz.append(pot_podnapis)
+            
+            subprocess.run(ukaz, check=True, capture_output=True)
+            self._nastavi_prosto("Podnapisi dodani.")
+            messagebox.showinfo("Uspeh", f"Podnapisi uspešno dodani!\n\nShranjeno v:\n{ciljna_pot}")
+        except subprocess.CalledProcessError as e:
+            self._nastavi_prosto("Napaka pri dodajanju.")
+            messagebox.showerror("Napaka", f"Napaka pri dodajanju podnapisov:\n{e.stderr.decode()}")
+    
+    def _pretvori(self):
+        """Pretvori avdio/video sledi."""
+        if not self.mkv_pot:
+            messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+            return
+        
+        if not self.ffmpeg:
+            messagebox.showerror("Napaka", "ffmpeg ni nameščen.")
+            return
+        
+        # Ciljna datoteka
+        osnovni_dir = os.path.dirname(self.mkv_pot)
+        osnovni_ime = Path(self.mkv_pot).stem
+        ciljna_pot = filedialog.asksaveasfilename(
+            title="Shrani kot",
+            initialdir=osnovni_dir,
+            initialfile=f"_{osnovni_ime}.mkv",
+            filetypes=[("MKV datoteke", "*.mkv")]
+        )
+        
+        if not ciljna_pot:
+            return
+        
+        self._nastavi_zasedeno("Pretvarjam...")
+        
+        try:
+            if "flatpak run" in self.ffmpeg:
+                ukaz = self.ffmpeg.split() + ["-i", self.mkv_pot, "-y"]
+            else:
+                ukaz = [self.ffmpeg, "-i", self.mkv_pot, "-y"]
+            
+            # Video kodek
+            video_izbira = self.video_format.get()
+            if "kopija" in video_izbira:
+                ukaz.extend(["-c:v", "copy"])
+            else:
+                if "h264" in video_izbira:
+                    ukaz.extend(["-c:v", "libx264"])
+                elif "h265" in video_izbira or "hevc" in video_izbira:
+                    ukaz.extend(["-c:v", "libx265"])
+                elif "vp9" in video_izbira:
+                    ukaz.extend(["-c:v", "libvpx-vp9"])
+                elif "av1" in video_izbira:
+                    ukaz.extend(["-c:v", "libaom-av1"])
+                
+                # CRF
+                crf = self.video_crf.get().split(" ")[0]
+                ukaz.extend(["-crf", crf])
+            
+            # Audio kodek
+            avdio_izbira = self.avdio_format.get()
+            if "kopija" in avdio_izbira:
+                ukaz.extend(["-c:a", "copy"])
+            else:
+                kodeki = {
+                    "aac": "aac", "ac3": "ac3", "mp3": "libmp3lame",
+                    "opus": "libopus", "flac": "flac", "vorbis": "libvorbis"
+                }
+                ukaz.extend(["-c:a", kodeki.get(avdio_izbira, "aac")])
+                ukaz.extend(["-b:a", self.avdio_bitrate.get()])
+            
+            # Kopiraj podnapise
+            ukaz.extend(["-c:s", "copy"])
+            
+            ukaz.append(ciljna_pot)
+            
+            subprocess.run(ukaz, check=True, capture_output=True)
+            self._nastavi_prosto("Pretvorba končana.")
+            messagebox.showinfo("Uspeh", f"Pretvorba uspešna!\n\nShranjeno v:\n{ciljna_pot}")
+        except subprocess.CalledProcessError as e:
+            self._nastavi_prosto("Napaka pri pretvorbi.")
+            messagebox.showerror("Napaka", f"Napaka pri pretvorbi:\n{e.stderr.decode()}")
+    
+    def _odstrani_sledi(self):
+        """Odstrani označene sledi."""
+        if not self.mkv_pot:
+            messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
+            return
+        
+        if not self.izbrane_za_odstranitev:
+            messagebox.showwarning("Opozorilo", "Označite vsaj eno sled za odstranitev.")
+            return
+        
+        if not self.ffmpeg:
+            messagebox.showerror("Napaka", "ffmpeg ni nameščen.")
+            return
+        
+        # Ciljna datoteka
+        osnovni_dir = os.path.dirname(self.mkv_pot)
+        osnovni_ime = Path(self.mkv_pot).stem
+        ciljna_pot = filedialog.asksaveasfilename(
+            title="Shrani kot",
+            initialdir=osnovni_dir,
+            initialfile=f"_{osnovni_ime}.mkv",
+            filetypes=[("MKV datoteke", "*.mkv")]
+        )
+        
+        if not ciljna_pot:
+            return
+        
+        self._nastavi_zasedeno("Odstranjujem sledi...")
+        
+        try:
+            # Pridobi vse sledi
+            vse_sledi = self._pridobi_informacije()
+            ohrani = [str(s.get("index")) for s in vse_sledi 
+                      if str(s.get("index")) not in self.izbrane_za_odstranitev]
+            
+            if "flatpak run" in self.ffmpeg:
+                ukaz = self.ffmpeg.split() + ["-i", self.mkv_pot, "-y"]
+            else:
+                ukaz = [self.ffmpeg, "-i", self.mkv_pot, "-y"]
+            
+            for stevilka in ohrani:
+                ukaz.extend(["-map", f"0:{stevilka}"])
+            
+            ukaz.extend(["-c", "copy", ciljna_pot])
+            
+            subprocess.run(ukaz, check=True, capture_output=True)
+            self._nastavi_prosto("Sledi odstranjene.")
+            messagebox.showinfo("Uspeh", f"Sledi uspešno odstranjene!\n\nShranjeno v:\n{ciljna_pot}")
+        except subprocess.CalledProcessError as e:
+            self._nastavi_prosto("Napaka pri odstranjevanju.")
+            messagebox.showerror("Napaka", f"Napaka pri odstranjevanju:\n{e.stderr.decode()}")
+
+
+def hitro_pretvorba_cli(izbrisi_izvorne=False):
+    """CLI način za hitro pretvorbo vseh video datotek v trenutnem imeniku."""
+    
+    # Poišči orodja
+    def poisci_orodje(ime):
+        pot = shutil.which(ime)
+        if pot:
+            return pot
+        try:
+            rezultat = subprocess.run(
+                ["flatpak", "list", "--app", "--columns=application"],
+                capture_output=True, text=True, timeout=5
+            )
+            if rezultat.returncode == 0:
+                aplikacije = rezultat.stdout.strip().split("\n")
+                if ime in ["ffmpeg", "ffprobe"]:
+                    for app in aplikacije:
+                        if "ffmpeg" in app.lower():
+                            return f"flatpak run --command={ime} {app}"
+                if ime == "mkvmerge":
+                    for app in aplikacije:
+                        if "mkvtoolnix" in app.lower():
+                            return f"flatpak run --command=mkvmerge {app}"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        return None
+    
+    ffmpeg = poisci_orodje("ffmpeg")
+    ffprobe = poisci_orodje("ffprobe")
+    mkvmerge = poisci_orodje("mkvmerge")
+    
+    if not mkvmerge:
+        print("Napaka: mkvmerge ni nameščen.")
+        sys.exit(1)
+    
+    # Poišči video datoteke
+    video_koncnice = [".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpeg", ".mpg"]
+    trenutni_dir = os.getcwd()
+    
+    video_datoteke = []
+    mkv_datoteke = []
+    for datoteka in os.listdir(trenutni_dir):
+        pot = os.path.join(trenutni_dir, datoteka)
+        if os.path.isfile(pot):
+            koncnica = Path(datoteka).suffix.lower()
+            if koncnica in video_koncnice:
+                video_datoteke.append(pot)
+            elif koncnica == ".mkv":
+                mkv_datoteke.append(pot)
+    
+    if not video_datoteke and not mkv_datoteke:
+        print("Ni video datotek v trenutnem imeniku.")
+        sys.exit(0)
+    
+    if video_datoteke:
+        print(f"Najdenih {len(video_datoteke)} video datotek.")
+    if mkv_datoteke:
+        print(f"Najdenih {len(mkv_datoteke)} MKV datotek za preverjanje.")
+    
+    uspesne = 0
+    neuspesne = 0
+    
+    # Jeziki, ki jih štejemo kot "naše" podnapise (prioriteta: slv > hrv > srp > bos)
+    nasi_jeziki = ["slv", "slo", "sl", "hrv", "hr", "srp", "sr", "bos", "bs"]
+    prioriteta_jezikov = {"slv": 0, "slo": 0, "sl": 0, "hrv": 1, "hr": 1, "srp": 2, "sr": 2, "bos": 3, "bs": 3}
+
+    def preveri_mkv_sledi(mkv_pot):
+        """Preveri sledi v MKV datoteki - vrne (ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_najboljsega)."""
+        if not ffprobe:
+            return None, None, False, None
+        try:
+            if "flatpak run" in ffprobe:
+                deli = ffprobe.split()
+                ukaz = deli + ["-v", "quiet", "-print_format", "json", "-show_streams", mkv_pot]
+            else:
+                ukaz = [ffprobe, "-v", "quiet", "-print_format", "json", "-show_streams", mkv_pot]
+            rezultat = subprocess.run(ukaz, capture_output=True, text=True, check=True)
+            podatki = json.loads(rezultat.stdout)
+            sledi = podatki.get("streams", [])
+            
+            ima_nase_podnapise = False
+            nasi_privzeti = False
+            audio_kodek = None
+            najboljsi_podnapis = None  # (prioriteta, indeks)
+            
+            sub_indeks = 0  # Šteje samo subtitle sledi
+            for sled in sledi:
+                if sled.get("codec_type") == "subtitle":
+                    jezik = sled.get("tags", {}).get("language", "").lower()
+                    disposition = sled.get("disposition", {})
+                    je_privzet = disposition.get("default", 0) == 1
+                    
+                    if jezik in nasi_jeziki:
+                        ima_nase_podnapise = True
+                        prio = prioriteta_jezikov.get(jezik, 99)
+                        
+                        if je_privzet:
+                            nasi_privzeti = True
+                        
+                        # Poišči najboljši podnapis po prioriteti
+                        if najboljsi_podnapis is None or prio < najboljsi_podnapis[0]:
+                            najboljsi_podnapis = (prio, sub_indeks)
+                    
+                    sub_indeks += 1
+                elif sled.get("codec_type") == "audio" and not audio_kodek:
+                    audio_kodek = sled.get("codec_name")
+            
+            indeks_za_privzet = najboljsi_podnapis[1] if najboljsi_podnapis else None
+            return ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet
+        except Exception:
+            return None, None, False, None
+    
+    def obdelaj_obstojeci_mkv(mkv_pot, srt_pot, izbrisi_izvorne):
+        """Obdelaj obstoječo MKV datoteko - doda podnapise, pretvori audio če potrebno."""
+        osnovni_ime = Path(mkv_pot).stem
+        
+        ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet = preveri_mkv_sledi(mkv_pot)
+        
+        # Določi potrebne akcije
+        dodaj_podnapise = srt_pot and not ima_nase_podnapise
+        nastavi_privzete = ima_nase_podnapise and not nasi_privzeti and indeks_za_privzet is not None
+        pretvori_audio = audio_kodek and audio_kodek.lower() not in ["aac"]
+        
+        if not dodaj_podnapise and not nastavi_privzete and not pretvori_audio:
+            # MKV je že v redu
+            if srt_pot and izbrisi_izvorne:
+                # Podnapisi so že v MKV, lahko izbrišemo zunanje
+                os.remove(srt_pot)
+                print(f"  ✗ Izbrisan (že v MKV): {Path(srt_pot).name}")
+            return True
+        
+        print(f"Obdelujem: {Path(mkv_pot).name}")
+        if dodaj_podnapise:
+            print(f"  + dodajam podnapise: {Path(srt_pot).name}")
+        if nastavi_privzete:
+            print(f"  + nastavljam naše podnapise kot privzete (sled {indeks_za_privzet})")
+        if pretvori_audio:
+            print(f"  + pretvarjam zvok ({audio_kodek} → AAC)")
+        
+        try:
+            zacasna_pot = mkv_pot.replace(".mkv", "_temp_bac.mkv")
+            
+            if pretvori_audio and ffmpeg:
+                # Uporabi ffmpeg za pretvorbo zvoka
+                if "flatpak run" in ffmpeg:
+                    ukaz_ff = ffmpeg.split() + ["-i", mkv_pot, "-y"]
+                else:
+                    ukaz_ff = [ffmpeg, "-i", mkv_pot, "-y"]
+                
+                ukaz_ff.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-c:s", "copy"])
+                
+                if dodaj_podnapise and srt_pot:
+                    # Dodaj še podnapise z ffmpeg
+                    ukaz_ff.extend(["-i", srt_pot])
+                    ukaz_ff.extend(["-map", "0:v", "-map", "0:a", "-map", "0:s?", "-map", "1:0"])
+                    ukaz_ff.extend(["-metadata:s:s:0", "language=slv"])
+                    ukaz_ff.extend(["-disposition:s:0", "default"])
+                elif nastavi_privzete and indeks_za_privzet is not None:
+                    ukaz_ff.extend([f"-disposition:s:{indeks_za_privzet}", "default"])
+                
+                ukaz_ff.append(zacasna_pot)
+                subprocess.run(ukaz_ff, check=True, capture_output=True)
+                
+            elif (dodaj_podnapise or nastavi_privzete) and mkvmerge:
+                # Uporabi mkvmerge za dodajanje/nastavljanje podnapisov
+                if "flatpak run" in mkvmerge:
+                    ukaz = mkvmerge.split() + ["-o", zacasna_pot]
+                else:
+                    ukaz = [mkvmerge, "-o", zacasna_pot]
+                
+                if nastavi_privzete and not dodaj_podnapise and indeks_za_privzet is not None:
+                    # Nastavi naše podnapise kot privzete (subtitle track indeks)
+                    ukaz.extend([f"--default-track-flag", f"s{indeks_za_privzet}:yes"])
+                
+                ukaz.append(mkv_pot)
+                
+                if dodaj_podnapise and srt_pot:
+                    ukaz.extend(["--language", "0:slv", "--default-track-flag", "0:yes"])
+                    ukaz.append(srt_pot)
+                
+                subprocess.run(ukaz, check=True, capture_output=True)
+            else:
+                return False
+            
+            # Zamenjaj staro z novo
+            os.remove(mkv_pot)
+            os.rename(zacasna_pot, mkv_pot)
+            
+            print(f"  ✓ Posodobljen: {Path(mkv_pot).name}")
+            
+            # Izbriši SRT če je zahtevano
+            if srt_pot and izbrisi_izvorne:
+                os.remove(srt_pot)
+                print(f"  ✗ Izbrisan: {Path(srt_pot).name}")
+            
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            napaka = e.stderr.decode() if e.stderr else str(e)
+            print(f"  ✗ Napaka: {napaka[:100]}")
+            # Počisti morebitne začasne datoteke
+            if os.path.exists(zacasna_pot):
+                os.remove(zacasna_pot)
+            return False
+    
+    # Najprej obdelaj obstoječe MKV datoteke
+    for mkv_pot in mkv_datoteke:
+        osnovni_ime = Path(mkv_pot).stem
+        
+        # Poišči pripadajoči SRT
+        srt_pot = None
+        for koncnica in [".srt", ".sl.srt", ".slv.srt", "_sl.srt", "_slv.srt"]:
+            mozna_pot = os.path.join(trenutni_dir, f"{osnovni_ime}{koncnica}")
+            if os.path.exists(mozna_pot):
+                srt_pot = mozna_pot
+                break
+        
+        if not srt_pot:
+            for datoteka in os.listdir(trenutni_dir):
+                if datoteka.lower().endswith(".srt"):
+                    dat_stem = Path(datoteka).stem
+                    if dat_stem == osnovni_ime or dat_stem.startswith(osnovni_ime + ".") or dat_stem.startswith(osnovni_ime + "_"):
+                        srt_pot = os.path.join(trenutni_dir, datoteka)
+                        break
+        
+        if obdelaj_obstojeci_mkv(mkv_pot, srt_pot, izbrisi_izvorne):
+            uspesne += 1
+        else:
+            neuspesne += 1
+    
+    for video_pot in video_datoteke:
+        osnovni_ime = Path(video_pot).stem
+        ciljna_pot = os.path.join(trenutni_dir, f"{osnovni_ime}.mkv")
+        
+        # Če MKV že obstaja, preskoči (že obdelano zgoraj)
+        if os.path.exists(ciljna_pot):
+            continue
+        
+        # Poišči pripadajoči SRT
+        srt_pot = None
+        for koncnica in [".srt", ".sl.srt", ".slv.srt", "_sl.srt", "_slv.srt"]:
+            mozna_pot = os.path.join(trenutni_dir, f"{osnovni_ime}{koncnica}")
+            if os.path.exists(mozna_pot):
+                srt_pot = mozna_pot
+                break
+        
+        # Poskusi najti SRT z enakim začetkom imena
+        if not srt_pot:
+            for datoteka in os.listdir(trenutni_dir):
+                if datoteka.lower().endswith(".srt"):
+                    dat_stem = Path(datoteka).stem
+                    if dat_stem == osnovni_ime or dat_stem.startswith(osnovni_ime + ".") or dat_stem.startswith(osnovni_ime + "_"):
+                        srt_pot = os.path.join(trenutni_dir, datoteka)
+                        break
+        
+        print(f"Pretvarjam: {Path(video_pot).name}")
+        if srt_pot:
+            print(f"  + podnapisi: {Path(srt_pot).name}")
+        
+        try:
+            # Preveri audio kodek
+            audio_kodek = None
+            if ffprobe:
+                try:
+                    if "flatpak run" in ffprobe:
+                        deli = ffprobe.split()
+                        ukaz = deli + ["-v", "quiet", "-select_streams", "a:0",
+                                      "-show_entries", "stream=codec_name",
+                                      "-of", "default=noprint_wrappers=1:nokey=1", video_pot]
+                    else:
+                        ukaz = [ffprobe, "-v", "quiet", "-select_streams", "a:0",
+                               "-show_entries", "stream=codec_name",
+                               "-of", "default=noprint_wrappers=1:nokey=1", video_pot]
+                    rezultat = subprocess.run(ukaz, capture_output=True, text=True, check=True)
+                    audio_kodek = rezultat.stdout.strip()
+                except Exception:
+                    pass
+            
+            potrebna_pretvorba_audio = audio_kodek and audio_kodek.lower() not in ["aac"]
+            vhodna_datoteka = video_pot
+            zacasna_pot = None
+            
+            # Če je potrebna pretvorba zvoka
+            if potrebna_pretvorba_audio and ffmpeg:
+                print(f"  Pretvarjam zvok ({audio_kodek} → AAC)...")
+                zacasna_pot = ciljna_pot.replace(".mkv", "_temp_audio.mkv")
+                
+                if "flatpak run" in ffmpeg:
+                    ukaz_ff = ffmpeg.split() + ["-i", video_pot, "-y"]
+                else:
+                    ukaz_ff = [ffmpeg, "-i", video_pot, "-y"]
+                
+                # -sn onemogoči kopiranje podnapisov iz izvorne datoteke
+                ukaz_ff.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-sn"])
+                ukaz_ff.append(zacasna_pot)
+                
+                subprocess.run(ukaz_ff, check=True, capture_output=True)
+                vhodna_datoteka = zacasna_pot
+            
+            # Združi z mkvmerge
+            if "flatpak run" in mkvmerge:
+                ukaz = mkvmerge.split() + ["-o", ciljna_pot]
+            else:
+                ukaz = [mkvmerge, "-o", ciljna_pot]
+            
+            ukaz.append(vhodna_datoteka)
+            
+            # Dodaj podnapise
+            if srt_pot:
+                ukaz.extend(["--language", "0:slv", "--default-track", "0:yes"])
+                ukaz.append(srt_pot)
+            
+            subprocess.run(ukaz, check=True, capture_output=True)
+            
+            # Počisti začasne datoteke
+            if zacasna_pot and os.path.exists(zacasna_pot):
+                os.remove(zacasna_pot)
+            
+            print(f"  ✓ Ustvarjen: {Path(ciljna_pot).name}")
+            uspesne += 1
+            
+            # Izbriši izvorne datoteke če je zahtevano
+            if izbrisi_izvorne:
+                os.remove(video_pot)
+                print(f"  ✗ Izbrisan: {Path(video_pot).name}")
+                if srt_pot:
+                    os.remove(srt_pot)
+                    print(f"  ✗ Izbrisan: {Path(srt_pot).name}")
+            
+        except subprocess.CalledProcessError as e:
+            napaka = e.stderr.decode() if e.stderr else str(e)
+            print(f"  ✗ Napaka: {napaka[:100]}")
+            neuspesne += 1
+            # Počisti morebitne začasne datoteke
+            if zacasna_pot and os.path.exists(zacasna_pot):
+                os.remove(zacasna_pot)
+    
+    print(f"\nKončano: {uspesne} uspešnih, {neuspesne} neuspešnih")
+
+
+def main():
+    # Parsiraj argumente
+    parser = argparse.ArgumentParser(
+        description="baConverter - Orodje za urejanje MKV datotek",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Primeri:
+  bac           Zaženi grafični vmesnik
+  bac -q        Hitro združi vse video+srt v MKV
+  bac -qq       Kot -q, ampak izbriše izvorne datoteke
+        """
+    )
+    parser.add_argument("-q", "--quick", action="count", default=0,
+                        help="Hitro združi video+srt v MKV (-q ohrani, -qq izbriše izvorne)")
+    
+    args = parser.parse_args()
+    
+    if args.quick > 0:
+        # CLI način
+        izbrisi = args.quick >= 2
+        hitro_pretvorba_cli(izbrisi_izvorne=izbrisi)
+    else:
+        # GUI način
+        try:
+            from tkinterdnd2 import TkinterDnD
+            root = TkinterDnD.Tk()
+        except ImportError:
+            root = tk.Tk()
+        
+        app = BaMKV(root)
+        root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
