@@ -24,8 +24,8 @@ class BaMKV:
     def __init__(self, root, prisiljena_tema=None):
         self.root = root
         self.root.title("baC - Urejanje MKV datotek")
-        self.root.geometry("950x800")
-        self.root.minsize(950, 800)
+        self.root.geometry("1200x800")
+        self.root.minsize(800, 600)
         
         self.mkv_pot = None
         self.stevilke_sledi = []
