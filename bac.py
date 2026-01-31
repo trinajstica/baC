@@ -21,14 +21,15 @@ from pathlib import Path
 
 
 class BaMKV:
-    def __init__(self, root):
+    def __init__(self, root, prisiljena_tema=None):
         self.root = root
         self.root.title("baC - Urejanje MKV datotek")
-        self.root.geometry("900x700")
-        self.root.minsize(800, 650)
+        self.root.geometry("950x800")
+        self.root.minsize(950, 800)
         
         self.mkv_pot = None
         self.stevilke_sledi = []
+        self.prisiljena_tema = prisiljena_tema
         
         # Zaznaj temo in nastavi barve
         self._nastavi_temo()
@@ -96,7 +97,10 @@ class BaMKV:
     
     def _nastavi_temo(self):
         """Nastavi barve glede na temo namizja."""
-        tema = self._zaznavaj_temo_namizja()
+        if self.prisiljena_tema:
+            tema = self.prisiljena_tema
+        else:
+            tema = self._zaznavaj_temo_namizja()
         self.tema = tema
         
         # Definiraj barvne sheme
@@ -167,7 +171,15 @@ class BaMKV:
         stil.configure("TCombobox", fieldbackground=self.barve["vnos_ozadje"], foreground=self.barve["besedilo"], 
             bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba"], darkcolor=self.barve["obroba"])
         stil.configure("TCheckbutton", background=self.barve["ozadje"], foreground=self.barve["besedilo"])
+        stil.map("TCheckbutton",
+            background=[("active", self.barve["ozadje"])],
+            foreground=[("active", self.barve["besedilo"])]
+        )
         stil.configure("TRadiobutton", background=self.barve["ozadje"], foreground=self.barve["besedilo"])
+        stil.map("TRadiobutton",
+            background=[("active", self.barve["ozadje"])],
+            foreground=[("active", self.barve["besedilo"])]
+        )
         stil.configure("TNotebook", background=self.barve["ozadje"], 
             bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba"], darkcolor=self.barve["obroba"],
             tabmargins=[2, 5, 2, 0])
@@ -193,6 +205,10 @@ class BaMKV:
             foreground=self.barve["besedilo"],
             bordercolor=self.barve["obroba"]
         )
+        stil.map("Treeview.Heading",
+            background=[("active", self.barve["gumb_aktivno"])],
+            foreground=[("active", self.barve["besedilo"])]
+        )
         stil.map("Treeview",
             background=[("selected", self.barve["drevo_izbrano"])],
             foreground=[("selected", "#ffffff")]
@@ -202,6 +218,18 @@ class BaMKV:
         stil.configure("TProgressbar",
             background=self.barve["poudarek"],
             troughcolor=self.barve["ozadje_okvir"]
+        )
+        
+        # Scrollbar
+        stil.configure("TScrollbar",
+            background=self.barve["gumb_ozadje"],
+            troughcolor=self.barve["ozadje_okvir"],
+            bordercolor=self.barve["obroba"],
+            arrowcolor=self.barve["besedilo"]
+        )
+        stil.map("TScrollbar",
+            background=[("active", self.barve["gumb_aktivno"])],
+            arrowcolor=[("active", self.barve["besedilo"])]
         )
         
         print(f"Tema namizja: {tema}")
@@ -2421,6 +2449,9 @@ Primeri:
     parser.add_argument("-h", "--help", action="help", help="Prikaži to sporočilo o pomoči in izstopi.")
     parser.add_argument("-q", "--quick", action="count", default=0,
                         help="Hitro združi video+srt v MKV (-q ohrani, -qq izbriše izvorne)")
+    tema_skupina = parser.add_mutually_exclusive_group()
+    tema_skupina.add_argument("--light", action="store_true", help="Uporabi svetlo temo")
+    tema_skupina.add_argument("--dark", action="store_true", help="Uporabi temno temo")
     
     args = parser.parse_args()
     
@@ -2430,13 +2461,20 @@ Primeri:
         hitro_pretvorba_cli(izbrisi_izvorne=izbrisi)
     else:
         # GUI način
+        # Določi temo
+        prisiljena_tema = None
+        if args.light:
+            prisiljena_tema = "svetla"
+        elif args.dark:
+            prisiljena_tema = "temna"
+        
         try:
             from tkinterdnd2 import TkinterDnD
             root = TkinterDnD.Tk()
         except ImportError:
             root = tk.Tk()
         
-        app = BaMKV(root)
+        app = BaMKV(root, prisiljena_tema=prisiljena_tema)
         root.mainloop()
 
 
