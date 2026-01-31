@@ -30,9 +30,181 @@ class BaMKV:
         self.mkv_pot = None
         self.stevilke_sledi = []
         
+        # Zaznaj temo in nastavi barve
+        self._nastavi_temo()
+        
         self._preveri_orodja()
         self._ustvari_vmesnik()
         self._nastavi_drag_drop()
+    
+    def _zaznavaj_temo_namizja(self):
+        """Zazna ali je sistem v temni ali svetli temi."""
+        # Poskusi GNOME/GTK nastavitve
+        try:
+            rezultat = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                capture_output=True, text=True, timeout=2
+            )
+            if rezultat.returncode == 0:
+                vrednost = rezultat.stdout.strip().lower()
+                if "dark" in vrednost:
+                    return "temna"
+                elif "light" in vrednost or "default" in vrednost:
+                    return "svetla"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        # Poskusi GTK tema
+        try:
+            rezultat = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "gtk-theme"],
+                capture_output=True, text=True, timeout=2
+            )
+            if rezultat.returncode == 0:
+                tema = rezultat.stdout.strip().lower()
+                if "dark" in tema:
+                    return "temna"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        # Poskusi KDE Plasma
+        try:
+            kde_conf = os.path.expanduser("~/.config/kdeglobals")
+            if os.path.exists(kde_conf):
+                with open(kde_conf, 'r') as f:
+                    vsebina = f.read().lower()
+                    if "breeze-dark" in vsebina or "breezedark" in vsebina:
+                        return "temna"
+        except (IOError, PermissionError):
+            pass
+        
+        # Poskusi xfconf za XFCE
+        try:
+            rezultat = subprocess.run(
+                ["xfconf-query", "-c", "xsettings", "-p", "/Net/ThemeName"],
+                capture_output=True, text=True, timeout=2
+            )
+            if rezultat.returncode == 0:
+                tema = rezultat.stdout.strip().lower()
+                if "dark" in tema:
+                    return "temna"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        # Privzeto svetla tema
+        return "svetla"
+    
+    def _nastavi_temo(self):
+        """Nastavi barve glede na temo namizja."""
+        tema = self._zaznavaj_temo_namizja()
+        self.tema = tema
+        
+        # Definiraj barvne sheme
+        if tema == "temna":
+            self.barve = {
+                "ozadje": "#2d2d2d",
+                "ozadje_okvir": "#383838",
+                "besedilo": "#e0e0e0",
+                "poudarek": "#4a9eff",
+                "gumb_ozadje": "#404040",
+                "gumb_aktivno": "#505050",
+                "vnos_ozadje": "#353535",
+                "drevo_ozadje": "#2d2d2d",
+                "drevo_izbrano": "#4a9eff",
+                "obroba": "#1a1a1a",
+                "obroba_svetla": "#454545",
+            }
+        else:
+            self.barve = {
+                "ozadje": "#f5f5f5",
+                "ozadje_okvir": "#ffffff",
+                "besedilo": "#1a1a1a",
+                "poudarek": "#0066cc",
+                "gumb_ozadje": "#e0e0e0",
+                "gumb_aktivno": "#d0d0d0",
+                "vnos_ozadje": "#ffffff",
+                "drevo_ozadje": "#ffffff",
+                "drevo_izbrano": "#0066cc",
+                "obroba": "#b0b0b0",
+                "obroba_svetla": "#d0d0d0",
+            }
+        
+        # Nastavi ttk stile
+        stil = ttk.Style()
+        
+        # Poskusi uporabiti clam temo kot osnovo
+        try:
+            stil.theme_use("clam")
+        except tk.TclError:
+            pass
+        
+        # Nastavi barve za okno
+        self.root.configure(bg=self.barve["ozadje"])
+        
+        # Nastavi stile za ttk widgete
+        stil.configure(".",
+            background=self.barve["ozadje"],
+            foreground=self.barve["besedilo"],
+            fieldbackground=self.barve["vnos_ozadje"],
+            troughcolor=self.barve["ozadje_okvir"],
+            bordercolor=self.barve["obroba"],
+            lightcolor=self.barve["obroba"],
+            darkcolor=self.barve["obroba"]
+        )
+        
+        stil.configure("TFrame", background=self.barve["ozadje"])
+        stil.configure("TLabelframe", background=self.barve["ozadje"], 
+            bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba"], darkcolor=self.barve["obroba"])
+        stil.configure("TLabelframe.Label", background=self.barve["ozadje"], foreground=self.barve["besedilo"])
+        stil.configure("TLabel", background=self.barve["ozadje"], foreground=self.barve["besedilo"])
+        stil.configure("TButton", background=self.barve["gumb_ozadje"], foreground=self.barve["besedilo"], 
+            bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba_svetla"], darkcolor=self.barve["obroba"])
+        stil.map("TButton",
+            background=[("active", self.barve["gumb_aktivno"]), ("pressed", self.barve["poudarek"])]
+        )
+        stil.configure("TEntry", fieldbackground=self.barve["vnos_ozadje"], foreground=self.barve["besedilo"], 
+            bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba"], darkcolor=self.barve["obroba"])
+        stil.configure("TCombobox", fieldbackground=self.barve["vnos_ozadje"], foreground=self.barve["besedilo"], 
+            bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba"], darkcolor=self.barve["obroba"])
+        stil.configure("TCheckbutton", background=self.barve["ozadje"], foreground=self.barve["besedilo"])
+        stil.configure("TRadiobutton", background=self.barve["ozadje"], foreground=self.barve["besedilo"])
+        stil.configure("TNotebook", background=self.barve["ozadje"], 
+            bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba"], darkcolor=self.barve["obroba"],
+            tabmargins=[2, 5, 2, 0])
+        stil.configure("TNotebook.Tab", background=self.barve["gumb_ozadje"], foreground=self.barve["besedilo"], padding=[10, 5],
+            bordercolor=self.barve["obroba"], lightcolor=self.barve["obroba"], darkcolor=self.barve["obroba"])
+        stil.map("TNotebook.Tab",
+            background=[("selected", self.barve["ozadje_okvir"])],
+            foreground=[("selected", self.barve["besedilo"])],
+            lightcolor=[("selected", self.barve["obroba"])],
+            darkcolor=[("selected", self.barve["obroba"])],
+            bordercolor=[("selected", self.barve["obroba"])]
+        )
+        
+        # Treeview
+        stil.configure("Treeview",
+            background=self.barve["drevo_ozadje"],
+            foreground=self.barve["besedilo"],
+            fieldbackground=self.barve["drevo_ozadje"],
+            bordercolor=self.barve["obroba"]
+        )
+        stil.configure("Treeview.Heading",
+            background=self.barve["gumb_ozadje"],
+            foreground=self.barve["besedilo"],
+            bordercolor=self.barve["obroba"]
+        )
+        stil.map("Treeview",
+            background=[("selected", self.barve["drevo_izbrano"])],
+            foreground=[("selected", "#ffffff")]
+        )
+        
+        # Progressbar
+        stil.configure("TProgressbar",
+            background=self.barve["poudarek"],
+            troughcolor=self.barve["ozadje_okvir"]
+        )
+        
+        print(f"Tema namizja: {tema}")
     
     def _nastavi_drag_drop(self):
         """Nastavi povleci in spusti za celotno aplikacijo."""
@@ -1148,7 +1320,7 @@ class BaMKV:
         okvir_drsnik = ttk.Frame(okvir)
         okvir_drsnik.pack(fill="both", expand=True)
         
-        platno = tk.Canvas(okvir_drsnik, highlightthickness=0)
+        platno = tk.Canvas(okvir_drsnik, highlightthickness=0, bg=self.barve["ozadje"])
         drsnik = ttk.Scrollbar(okvir_drsnik, orient="vertical", command=platno.yview)
         okvir_vsebina = ttk.Frame(platno)
         
