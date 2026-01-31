@@ -438,6 +438,11 @@ class BaMKV:
         zavihki.add(okvir_hitro, text="Hitro v MKV")
         self._ustvari_hitro_pretvorbo(okvir_hitro)
         
+        # Zavihek: Navodila
+        okvir_navodila = ttk.Frame(zavihki, padding=10)
+        zavihki.add(okvir_navodila, text="Navodila")
+        self._ustvari_navodila(okvir_navodila)
+        
         # Statusna vrstica
         okvir_status = ttk.Frame(self.root)
         okvir_status.pack(fill="x", padx=10, pady=5)
@@ -1136,6 +1141,172 @@ class BaMKV:
             napaka = e.stderr.decode() if e.stderr else str(e)
             self._nastavi_prosto("Napaka pri ustvarjanju.")
             messagebox.showerror("Napaka", f"Napaka pri ustvarjanju MKV:\n{napaka}")
+    
+    def _ustvari_navodila(self, okvir):
+        """Ustvari zavihek z navodili za uporabo."""
+        # Ustvari okvir z drsnikom
+        okvir_drsnik = ttk.Frame(okvir)
+        okvir_drsnik.pack(fill="both", expand=True)
+        
+        platno = tk.Canvas(okvir_drsnik, highlightthickness=0)
+        drsnik = ttk.Scrollbar(okvir_drsnik, orient="vertical", command=platno.yview)
+        okvir_vsebina = ttk.Frame(platno)
+        
+        # ID okna za kasnejšo posodobitev širine
+        okno_id = platno.create_window((0, 0), window=okvir_vsebina, anchor="nw")
+        
+        def _posodobi_sirina(event):
+            platno.itemconfig(okno_id, width=event.width)
+        
+        def _posodobi_scroll(event):
+            platno.configure(scrollregion=platno.bbox("all"))
+        
+        platno.bind("<Configure>", _posodobi_sirina)
+        okvir_vsebina.bind("<Configure>", _posodobi_scroll)
+        platno.configure(yscrollcommand=drsnik.set)
+        
+        # Omogoči drsenje z miškinim kolescem
+        def _on_mousewheel(event):
+            platno.yview_scroll(int(-1*(event.delta/120)), "units")
+        def _on_mousewheel_linux(event):
+            if event.num == 4:
+                platno.yview_scroll(-1, "units")
+            elif event.num == 5:
+                platno.yview_scroll(1, "units")
+        
+        platno.bind_all("<MouseWheel>", _on_mousewheel)
+        platno.bind_all("<Button-4>", _on_mousewheel_linux)
+        platno.bind_all("<Button-5>", _on_mousewheel_linux)
+        
+        platno.pack(side="left", fill="both", expand=True)
+        drsnik.pack(side="right", fill="y")
+        
+        # Večji font za navodila
+        font_naslov = ("TkDefaultFont", 16, "bold")
+        font_razdelek = ("TkDefaultFont", 11, "bold")
+        font_besedilo = ("TkDefaultFont", 11)
+        
+        # Naslov
+        ttk.Label(okvir_vsebina, text="Navodila za uporabo baC", 
+                  font=font_naslov).pack(anchor="w", pady=(0, 15), padx=10)
+        
+        navodila = [
+            ("Pregled sledi", [
+                "Ta zavihek prikazuje vse sledi (video, zvok, podnapisi) v odprti MKV datoteki.",
+                "Z desnim klikom na sled odprete kontekstni meni z možnostmi:",
+                "  • Odstrani sled - doda operacijo za odstranitev izbrane sledi",
+                "  • Spremeni jezik - spremeni jezikovno oznako sledi",
+                "  • Spremeni naslov - spremeni naslov/ime sledi",
+                "  • Nastavi kot privzeto - označi sled kot privzeto",
+                "  • Pretvori zvok - pretvori zvočno sled v drug format (AAC, AC3, MP3)",
+                "",
+                "Spodaj je seznam čakajočih operacij. Ko dodate operacije, kliknite",
+                "'Izvedi vse' za uporabo vseh sprememb na MKV datoteki.",
+                "",
+                "Gumba '+ Podnapisi' in '+ Zvok' omogočata povleci-in-spusti datotek."
+            ]),
+            ("Dodaj podnapise", [
+                "Ta zavihek omogoča hitro dodajanje podnapisov v MKV datoteko.",
+                "",
+                "Koraki:",
+                "  1. Izberite datoteko podnapisov (.srt, .ass, .ssa, .sub, .vtt)",
+                "  2. Izberite jezik podnapisov iz spustnega seznama",
+                "  3. Po želji označite 'Nastavi kot privzet podnapis'",
+                "  4. Kliknite 'Dodaj podnapise'",
+                "",
+                "Podprti formati: SRT, ASS, SSA, SUB, VTT, TXT"
+            ]),
+            ("Pretvori", [
+                "Ta zavihek omogoča pretvorbo zvočnih in video sledi.",
+                "",
+                "Pretvorba zvoka:",
+                "  • Izberite ciljni format (AAC, AC3, MP3, OPUS, FLAC, Vorbis)",
+                "  • Nastavite bitno hitrost (64k - 320k)",
+                "  • 'Kopija' ohrani izvirni format brez ponovnega kodiranja",
+                "",
+                "Pretvorba videa:",
+                "  • Izberite ciljni kodek (H.264, H.265/HEVC, VP9, AV1)",
+                "  • Nastavite kakovost CRF (nižja = boljša kakovost, večja datoteka)",
+                "  • 'Kopija' ohrani izvirni format (priporočeno za hitrost)"
+            ]),
+            ("Odstrani sledi", [
+                "Ta zavihek omogoča odstranjevanje neželenih sledi iz MKV datoteke.",
+                "",
+                "Uporaba:",
+                "  1. Kliknite na vrstico za označitev/odznačitev sledi",
+                "  2. Označene sledi (☑) bodo odstranjene",
+                "  3. Kliknite 'Odstrani označene sledi' za izvedbo",
+                "",
+                "Uporabno za odstranitev nepotrebnih zvočnih sledi ali podnapisov."
+            ]),
+            ("Ustvari MKV", [
+                "Ta zavihek omogoča ustvarjanje novega MKV iz več vhodnih datotek.",
+                "",
+                "Koraki:",
+                "  1. Dodajte video datoteko (obvezno)",
+                "  2. Dodajte zvočne datoteke (neobvezno)",
+                "  3. Dodajte podnapise (neobvezno)",
+                "  4. Za vsako datoteko izberite jezik",
+                "  5. Po želji nastavite naslov MKV datoteke",
+                "  6. Kliknite 'Ustvari MKV'",
+                "",
+                "Podpira povleci-in-spusti datotek v seznam."
+            ]),
+            ("Hitro v MKV", [
+                "Ta zavihek omogoča hitro pretvorbo video datoteke v MKV.",
+                "",
+                "Samodejno zazna povezane datoteke (podnapisi, zvok) z enakim imenom.",
+                "",
+                "Koraki:",
+                "  1. Izberite ali povlecite video datoteko",
+                "  2. Program samodejno poišče povezane datoteke",
+                "  3. Odkljukajte datoteke, ki jih ne želite vključiti",
+                "  4. Nastavite jezik podnapisov",
+                "  5. Kliknite 'Pretvori v MKV'",
+                "",
+                "Možnosti:",
+                "  • Podnapisi kot privzeti - samodejno prikaže podnapise",
+                "  • Kopiraj video brez kodiranja - hitrejša pretvorba",
+                "  • Pretvori zvok v AAC - za boljšo združljivost"
+            ]),
+            ("Splošni nasveti", [
+                "• Za odpiranje MKV datoteke uporabite gumb 'Odpri MKV' na vrhu",
+                "• Povleci-in-spusti deluje na večini vnosnih polj",
+                "• Program potrebuje nameščena orodja: ffmpeg, ffprobe, mkvmerge",
+                "• Izvirne datoteke se ohranijo - ustvari se nova datoteka",
+                "",
+                "Ukazna vrstica:",
+                "  bac       - Zaženi grafični vmesnik",
+                "  bac -q    - Hitro združi video+podnapisi v MKV",
+                "  bac -qq   - Kot -q, ampak izbriše izvorne datoteke"
+            ])
+        ]
+        
+        for naslov, vrstice in navodila:
+            okvir_razdelek = ttk.LabelFrame(okvir_vsebina, text=naslov, padding=10)
+            okvir_razdelek.pack(fill="x", pady=5, padx=10, expand=True)
+            
+            for vrstica in vrstice:
+                lbl = ttk.Label(okvir_razdelek, text=vrstica, font=font_besedilo,
+                                wraplength=800, justify="left")
+                lbl.pack(anchor="w", fill="x")
+                # Dinamično prilagajanje wraplength
+                def _posodobi_wrap(event, label=lbl):
+                    label.configure(wraplength=event.width - 20)
+                lbl.bind("<Configure>", _posodobi_wrap)
+        
+        # Glava z informacijami o projektu
+        okvir_glava = ttk.Frame(okvir_vsebina)
+        okvir_glava.pack(fill="x", pady=(20, 10), padx=5)
+        
+        ttk.Separator(okvir_glava, orient="horizontal").pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(okvir_glava, text="Idejni vodja: BArko", 
+                  font=("TkDefaultFont", 9)).pack(anchor="center")
+        ttk.Label(okvir_glava, text="Programiranje: SimOne", 
+                  font=("TkDefaultFont", 9)).pack(anchor="center")
+        ttk.Label(okvir_glava, text="Izdelava: Jan, 2026", 
+                  font=("TkDefaultFont", 9)).pack(anchor="center")
     
     def _ustvari_hitro_pretvorbo(self, okvir):
         """Ustvari zavihek za hitro pretvorbo v MKV."""
