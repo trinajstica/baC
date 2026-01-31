@@ -17,7 +17,7 @@
 - `mkvmerge` (MKVToolNix) — obvezno za združevanje in CLI
 - `ffmpeg` in `ffprobe` — priporočeno za pretvorbe in prepoznavo kodakov
 - `python3-tk` (tkinter) — za GUI
-- opcijsko: `tkinterdnd2` ali `tkdnd` za drag & drop v GUI
+- opcijsko: `tkinterdnd2` ali `tkdnd` za povleci in spusti v GUI
 
 ### Namestitev (primer: Debian/Ubuntu)
 

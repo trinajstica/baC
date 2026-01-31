@@ -35,7 +35,7 @@ class BaMKV:
         self._nastavi_drag_drop()
     
     def _nastavi_drag_drop(self):
-        """Nastavi drag & drop za celotno aplikacijo."""
+        """Nastavi povleci in spusti za celotno aplikacijo."""
         try:
             # Poskusi uvoziti tkinterdnd2
             from tkinterdnd2 import DND_FILES
@@ -67,7 +67,7 @@ class BaMKV:
             self._nastavi_xdnd()
     
     def _nastavi_xdnd(self):
-        """Alternativna metoda za drag & drop brez tkinterdnd2."""
+        """Alternativna metoda za povleci in spusti brez tkinterdnd2."""
         # Poskusi nativno Tk DnD podporo
         try:
             self.root.tk.call('package', 'require', 'tkdnd')
@@ -83,10 +83,10 @@ class BaMKV:
                 self.root.tk.call('tkdnd::drop_target', 'register', widget._w, '*')
                 widget.bind('<<Drop>>', callback)
         except tk.TclError:
-            print("Drag & drop ni na voljo. Namestite tkdnd ali tkinterdnd2.")
+            print("Povleci in spusti ni na voljo. Namestite tkdnd ali tkinterdnd2.")
     
     def _parsiraj_drop_pot(self, podatki):
-        """Parsira pot iz drag & drop dogodka."""
+        """Parsira pot iz dogodka povleci in spusti."""
         pot = podatki.strip()
         # Odstrani file:// predpono
         if pot.startswith('file://'):
@@ -103,7 +103,7 @@ class BaMKV:
         return pot
     
     def _drop_mkv(self, dogodek):
-        """Obdelaj drop MKV datoteke."""
+        """Obdelaj povlečeno in spuščeno MKV datoteko."""
         pot = self._parsiraj_drop_pot(dogodek.data)
         if pot and os.path.isfile(pot):
             koncnica = Path(pot).suffix.lower()
@@ -119,7 +119,7 @@ class BaMKV:
         return dogodek.action if hasattr(dogodek, 'action') else None
     
     def _drop_podnapis(self, dogodek):
-        """Obdelaj drop datoteke podnapisov."""
+        """Obdelaj povlečeno datoteko podnapisov."""
         pot = self._parsiraj_drop_pot(dogodek.data)
         if pot and os.path.isfile(pot):
             koncnica = Path(pot).suffix.lower()
@@ -131,7 +131,7 @@ class BaMKV:
         return dogodek.action if hasattr(dogodek, 'action') else None
     
     def _drop_hitro_video(self, dogodek):
-        """Obdelaj drop video datoteke za hitro pretvorbo."""
+        """Obdelaj povlečeno video datoteko za hitro pretvorbo."""
         pot = self._parsiraj_drop_pot(dogodek.data)
         if pot and os.path.isfile(pot):
             koncnica = Path(pot).suffix.lower()
@@ -191,7 +191,7 @@ class BaMKV:
         self.status.config(text=f"Najdenih {len(najdene)} povezanih datotek ({stevilo_sub} podnapisov)")
     
     def _drop_vhodne(self, dogodek):
-        """Obdelaj drop datotek v seznam vhodnih datotek."""
+        """Obdelaj povlečene datoteke v seznam vhodnih datotek."""
         pot = self._parsiraj_drop_pot(dogodek.data)
         if pot and os.path.isfile(pot):
             koncnica = Path(pot).suffix.lower()
@@ -223,7 +223,7 @@ class BaMKV:
         return dogodek.action if hasattr(dogodek, 'action') else None
     
     def _drop_op_podnapisi(self, dogodek):
-        """Obdelaj drop podnapisov na gumb - doda operacijo."""
+        """Obdelaj povlečene podnapise na gumbu - doda operacijo."""
         pot = self._parsiraj_drop_pot(dogodek.data)
         if pot and os.path.isfile(pot):
             koncnica = Path(pot).suffix.lower()
@@ -240,7 +240,7 @@ class BaMKV:
         return dogodek.action if hasattr(dogodek, 'action') else None
     
     def _drop_op_zvok(self, dogodek):
-        """Obdelaj drop zvoka na gumb - doda operacijo."""
+        """Obdelaj povlečeno zvočno datoteko na gumbu - doda operacijo."""
         pot = self._parsiraj_drop_pot(dogodek.data)
         if pot and os.path.isfile(pot):
             koncnica = Path(pot).suffix.lower()
@@ -2055,16 +2055,27 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
 
 def main():
     # Parsiraj argumente
+    class SloveneHelpFormatter(argparse.RawDescriptionHelpFormatter):
+        def format_help(self):
+            help_text = super().format_help()
+            help_text = help_text.replace('usage:', 'Uporaba:')
+            help_text = help_text.replace('options:', 'Opcije:')
+            help_text = help_text.replace('optional arguments:', 'Opcije:')
+            help_text = help_text.replace('positional arguments:', 'Pozicijski argumenti:')
+            return help_text
+
     parser = argparse.ArgumentParser(
         description="baConverter - Orodje za urejanje MKV datotek",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=SloveneHelpFormatter,
         epilog="""
 Primeri:
   bac           Zaženi grafični vmesnik
   bac -q        Hitro združi vse video+srt v MKV
   bac -qq       Kot -q, ampak izbriše izvorne datoteke
-        """
+        """,
+        add_help=False
     )
+    parser.add_argument("-h", "--help", action="help", help="Prikaži to sporočilo o pomoči in izstopi.")
     parser.add_argument("-q", "--quick", action="count", default=0,
                         help="Hitro združi video+srt v MKV (-q ohrani, -qq izbriše izvorne)")
     
