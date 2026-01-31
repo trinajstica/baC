@@ -145,6 +145,42 @@ class BaMKV:
         # Nastavi barve za okno
         self.root.configure(bg=self.barve["ozadje"])
         
+        # Nastavi globalne barve za standardne Tk widgete (dialogi, meniji, itd.)
+        self.root.option_add("*Background", self.barve["ozadje"])
+        self.root.option_add("*Foreground", self.barve["besedilo"])
+        self.root.option_add("*selectBackground", self.barve["drevo_izbrano"])
+        self.root.option_add("*selectForeground", "#ffffff")
+        self.root.option_add("*Entry.Background", self.barve["vnos_ozadje"])
+        self.root.option_add("*Entry.Foreground", self.barve["besedilo"])
+        self.root.option_add("*Listbox.Background", self.barve["vnos_ozadje"])
+        self.root.option_add("*Listbox.Foreground", self.barve["besedilo"])
+        self.root.option_add("*Menu.Background", self.barve["ozadje"])
+        self.root.option_add("*Menu.Foreground", self.barve["besedilo"])
+        self.root.option_add("*Menu.activeBackground", self.barve["drevo_izbrano"])
+        self.root.option_add("*Menu.activeForeground", "#ffffff")
+        self.root.option_add("*Button.Background", self.barve["gumb_ozadje"])
+        self.root.option_add("*Button.Foreground", self.barve["besedilo"])
+        self.root.option_add("*Button.activeBackground", self.barve["gumb_aktivno"])
+        self.root.option_add("*Button.activeForeground", self.barve["besedilo"])
+        self.root.option_add("*Label.Background", self.barve["ozadje"])
+        self.root.option_add("*Label.Foreground", self.barve["besedilo"])
+        self.root.option_add("*Checkbutton.Background", self.barve["ozadje"])
+        self.root.option_add("*Checkbutton.Foreground", self.barve["besedilo"])
+        self.root.option_add("*Checkbutton.activeBackground", self.barve["ozadje"])
+        self.root.option_add("*Checkbutton.activeForeground", self.barve["besedilo"])
+        self.root.option_add("*Checkbutton.selectColor", self.barve["vnos_ozadje"])
+        self.root.option_add("*Radiobutton.Background", self.barve["ozadje"])
+        self.root.option_add("*Radiobutton.Foreground", self.barve["besedilo"])
+        self.root.option_add("*Radiobutton.activeBackground", self.barve["ozadje"])
+        self.root.option_add("*Radiobutton.activeForeground", self.barve["besedilo"])
+        self.root.option_add("*Radiobutton.selectColor", self.barve["vnos_ozadje"])
+        self.root.option_add("*Combobox.Background", self.barve["vnos_ozadje"])
+        self.root.option_add("*Combobox.Foreground", self.barve["besedilo"])
+        self.root.option_add("*TCombobox*Listbox.background", self.barve["vnos_ozadje"])
+        self.root.option_add("*TCombobox*Listbox.foreground", self.barve["besedilo"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", self.barve["drevo_izbrano"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        
         # Nastavi stile za ttk widgete
         stil.configure(".",
             background=self.barve["ozadje"],
@@ -233,6 +269,131 @@ class BaMKV:
         )
         
         print(f"Tema namizja: {tema}")
+    
+    def _odpri_dialog_datoteka(self, naslov="Izberi datoteko", tipi=None, zacetna_mapa=None):
+        """Odpre dialog za izbiro datoteke z uporabo sistemskega dialoga."""
+        # Poskusi zenity (GNOME/GTK)
+        if shutil.which("zenity"):
+            cmd = ["zenity", "--file-selection", f"--title={naslov}"]
+            if tipi:
+                for opis, vzorci in tipi:
+                    if vzorci != "*.*":
+                        for vzorec in vzorci.split():
+                            cmd.append(f"--file-filter={opis} | {vzorec}")
+                cmd.append("--file-filter=Vse datoteke | *")
+            if zacetna_mapa:
+                cmd.append(f"--filename={zacetna_mapa}/")
+            try:
+                rezultat = subprocess.run(cmd, capture_output=True, text=True)
+                if rezultat.returncode == 0:
+                    return rezultat.stdout.strip()
+                return None
+            except Exception:
+                pass
+        
+        # Poskusi kdialog (KDE)
+        if shutil.which("kdialog"):
+            cmd = ["kdialog", "--getopenfilename"]
+            if zacetna_mapa:
+                cmd.append(zacetna_mapa)
+            else:
+                cmd.append(os.getcwd())
+            if tipi:
+                filtri = []
+                for opis, vzorci in tipi:
+                    if vzorci != "*.*":
+                        filtri.append(f"{vzorci}|{opis}")
+                if filtri:
+                    cmd.append(" ".join(filtri))
+            cmd.extend(["--title", naslov])
+            try:
+                rezultat = subprocess.run(cmd, capture_output=True, text=True)
+                if rezultat.returncode == 0:
+                    return rezultat.stdout.strip()
+                return None
+            except Exception:
+                pass
+        
+        # Nazaj na tkinter
+        filetypes = []
+        if tipi:
+            for opis, vzorci in tipi:
+                filetypes.append((opis, vzorci))
+        return filedialog.askopenfilename(title=naslov, filetypes=filetypes or [("Vse datoteke", "*.*")],
+                                          initialdir=zacetna_mapa)
+    
+    def _shrani_dialog_datoteka(self, naslov="Shrani datoteko", privzeto_ime=None, tipi=None, zacetna_mapa=None):
+        """Odpre dialog za shranjevanje datoteke z uporabo sistemskega dialoga."""
+        # Poskusi zenity (GNOME/GTK)
+        if shutil.which("zenity"):
+            cmd = ["zenity", "--file-selection", "--save", f"--title={naslov}"]
+            if privzeto_ime:
+                if zacetna_mapa:
+                    cmd.append(f"--filename={os.path.join(zacetna_mapa, privzeto_ime)}")
+                else:
+                    cmd.append(f"--filename={privzeto_ime}")
+            elif zacetna_mapa:
+                cmd.append(f"--filename={zacetna_mapa}/")
+            if tipi:
+                for opis, vzorci in tipi:
+                    if vzorci != "*.*":
+                        for vzorec in vzorci.split():
+                            cmd.append(f"--file-filter={opis} | {vzorec}")
+                cmd.append("--file-filter=Vse datoteke | *")
+            cmd.append("--confirm-overwrite")
+            try:
+                rezultat = subprocess.run(cmd, capture_output=True, text=True)
+                if rezultat.returncode == 0:
+                    return rezultat.stdout.strip()
+                return None
+            except Exception:
+                pass
+        
+        # Poskusi kdialog (KDE)
+        if shutil.which("kdialog"):
+            cmd = ["kdialog", "--getsavefilename"]
+            if zacetna_mapa and privzeto_ime:
+                cmd.append(os.path.join(zacetna_mapa, privzeto_ime))
+            elif zacetna_mapa:
+                cmd.append(zacetna_mapa)
+            elif privzeto_ime:
+                cmd.append(privzeto_ime)
+            else:
+                cmd.append(os.getcwd())
+            if tipi:
+                filtri = []
+                for opis, vzorci in tipi:
+                    if vzorci != "*.*":
+                        filtri.append(f"{vzorci}|{opis}")
+                if filtri:
+                    cmd.append(" ".join(filtri))
+            cmd.extend(["--title", naslov])
+            try:
+                rezultat = subprocess.run(cmd, capture_output=True, text=True)
+                if rezultat.returncode == 0:
+                    return rezultat.stdout.strip()
+                return None
+            except Exception:
+                pass
+        
+        # Nazaj na tkinter
+        filetypes = []
+        if tipi:
+            for opis, vzorci in tipi:
+                filetypes.append((opis, vzorci))
+        return filedialog.asksaveasfilename(title=naslov, initialfile=privzeto_ime,
+                                            filetypes=filetypes or [("Vse datoteke", "*.*")],
+                                            initialdir=zacetna_mapa)
+    
+    def _ustvari_dialog(self, naslov, sirina=300, visina=120):
+        """Ustvari dialog s pravilno barvo ozadja."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(naslov)
+        dialog.geometry(f"{sirina}x{visina}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=self.barve["ozadje"])
+        return dialog
     
     def _nastavi_drag_drop(self):
         """Nastavi povleci in spusti za celotno aplikacijo."""
@@ -461,11 +622,7 @@ class BaMKV:
     
     def _prikazi_dialog_podnapisi(self, pot):
         """Prikaže dialog za nastavitve podnapisov."""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Nastavitve podnapisov")
-        dialog.geometry("350x180")
-        dialog.transient(self.root)
-        dialog.grab_set()
+        dialog = self._ustvari_dialog("Nastavitve podnapisov", 350, 180)
         
         ttk.Label(dialog, text="Jezik:").pack(pady=(10, 5))
         jezik_izbira = ttk.Combobox(dialog, values=[
@@ -795,11 +952,7 @@ class BaMKV:
         if not sled:
             return
         
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Spremeni jezik")
-        dialog.geometry("300x120")
-        dialog.transient(self.root)
-        dialog.grab_set()
+        dialog = self._ustvari_dialog("Spremeni jezik", 300, 120)
         
         ttk.Label(dialog, text="Nov jezik:").pack(pady=10)
         izbira = ttk.Combobox(dialog, values=[
@@ -825,11 +978,7 @@ class BaMKV:
         if not sled:
             return
         
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Spremeni naslov")
-        dialog.geometry("350x120")
-        dialog.transient(self.root)
-        dialog.grab_set()
+        dialog = self._ustvari_dialog("Spremeni naslov", 350, 120)
         
         ttk.Label(dialog, text="Nov naslov:").pack(pady=10)
         vnos = ttk.Entry(dialog, width=40)
@@ -871,9 +1020,9 @@ class BaMKV:
             messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
             return
         
-        pot = filedialog.askopenfilename(
-            title="Izberi datoteko podnapisov",
-            filetypes=[("Podnapisi", "*.srt *.ass *.ssa *.sub *.vtt"), ("Vse datoteke", "*.*")]
+        pot = self._odpri_dialog_datoteka(
+            naslov="Izberi datoteko podnapisov",
+            tipi=[("Podnapisi", "*.srt *.ass *.ssa *.sub *.vtt")]
         )
         if not pot:
             return
@@ -886,10 +1035,9 @@ class BaMKV:
             messagebox.showwarning("Opozorilo", "Najprej odprite MKV datoteko.")
             return
         
-        pot = filedialog.askopenfilename(
-            title="Izberi zvočno datoteko",
-            filetypes=[("Zvočne datoteke", "*.mp3 *.aac *.ac3 *.flac *.ogg *.wav *.m4a *.opus"), 
-                       ("Vse datoteke", "*.*")]
+        pot = self._odpri_dialog_datoteka(
+            naslov="Izberi zvočno datoteko",
+            tipi=[("Zvočne datoteke", "*.mp3 *.aac *.ac3 *.flac *.ogg *.wav *.m4a *.opus")]
         )
         if not pot:
             return
@@ -916,11 +1064,11 @@ class BaMKV:
         # Ciljna datoteka
         osnovni_dir = os.path.dirname(self.mkv_pot)
         osnovni_ime = Path(self.mkv_pot).stem
-        ciljna_pot = filedialog.asksaveasfilename(
-            title="Shrani kot",
-            initialdir=osnovni_dir,
-            initialfile=f"_{osnovni_ime}.mkv",
-            filetypes=[("MKV datoteke", "*.mkv")]
+        ciljna_pot = self._shrani_dialog_datoteka(
+            naslov="Shrani kot",
+            zacetna_mapa=osnovni_dir,
+            privzeto_ime=f"_{osnovni_ime}.mkv",
+            tipi=[("MKV datoteke", "*.mkv")]
         )
         
         if not ciljna_pot:
@@ -1225,7 +1373,7 @@ class BaMKV:
                     ("Vse datoteke", "*.*")]
             naslov = "Izberi datoteko podnapisov"
         
-        pot = filedialog.askopenfilename(title=naslov, filetypes=tipi)
+        pot = self._odpri_dialog_datoteka(naslov=naslov, tipi=tipi)
         if pot:
             # Vprašaj za jezik
             jezik = self._vprasaj_jezik()
@@ -1239,11 +1387,7 @@ class BaMKV:
     
     def _vprasaj_jezik(self):
         """Odpre dialog za izbiro jezika."""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Izberi jezik")
-        dialog.geometry("300x120")
-        dialog.transient(self.root)
-        dialog.grab_set()
+        dialog = self._ustvari_dialog("Izberi jezik", 300, 120)
         
         ttk.Label(dialog, text="Jezik sledi:").pack(pady=10)
         
@@ -1299,10 +1443,10 @@ class BaMKV:
             return
         
         # Ciljna datoteka
-        ciljna_pot = filedialog.asksaveasfilename(
-            title="Shrani MKV kot",
-            initialfile="nov_video.mkv",
-            filetypes=[("MKV datoteke", "*.mkv")]
+        ciljna_pot = self._shrani_dialog_datoteka(
+            naslov="Shrani MKV kot",
+            privzeto_ime="nov_video.mkv",
+            tipi=[("MKV datoteke", "*.mkv")]
         )
         
         if not ciljna_pot:
@@ -1576,12 +1720,9 @@ class BaMKV:
     
     def _izberi_hitro_video(self):
         """Izbere video datoteko in poišče povezane podnapise."""
-        pot = filedialog.askopenfilename(
-            title="Izberi video datoteko",
-            filetypes=[
-                ("Video datoteke", "*.mp4 *.avi *.mov *.wmv *.flv *.webm *.m4v *.mpeg *.mpg *.mkv"),
-                ("Vse datoteke", "*.*")
-            ]
+        pot = self._odpri_dialog_datoteka(
+            naslov="Izberi video datoteko",
+            tipi=[("Video datoteke", "*.mp4 *.avi *.mov *.wmv *.flv *.webm *.m4v *.mpeg *.mpg *.mkv")]
         )
         if not pot:
             return
@@ -1701,11 +1842,11 @@ class BaMKV:
         osnovni_dir = os.path.dirname(video_pot)
         osnovni_ime = Path(video_pot).stem
         
-        ciljna_pot = filedialog.asksaveasfilename(
-            title="Shrani MKV kot",
-            initialdir=osnovni_dir,
-            initialfile=f"{osnovni_ime}.mkv",
-            filetypes=[("MKV datoteke", "*.mkv")]
+        ciljna_pot = self._shrani_dialog_datoteka(
+            naslov="Shrani MKV kot",
+            zacetna_mapa=osnovni_dir,
+            privzeto_ime=f"{osnovni_ime}.mkv",
+            tipi=[("MKV datoteke", "*.mkv")]
         )
         
         if not ciljna_pot:
@@ -1788,9 +1929,9 @@ class BaMKV:
     
     def _odpri_mkv(self):
         """Odpre dialog za izbiro MKV datoteke."""
-        pot = filedialog.askopenfilename(
-            title="Izberi MKV datoteko",
-            filetypes=[("MKV datoteke", "*.mkv"), ("Vse datoteke", "*.*")]
+        pot = self._odpri_dialog_datoteka(
+            naslov="Izberi MKV datoteko",
+            tipi=[("MKV datoteke", "*.mkv")]
         )
         if pot:
             self.mkv_pot = pot
@@ -1889,14 +2030,9 @@ class BaMKV:
     
     def _izberi_podnapis(self):
         """Odpre dialog za izbiro datoteke podnapisov."""
-        pot = filedialog.askopenfilename(
-            title="Izberi datoteko podnapisov",
-            filetypes=[
-                ("Podnapisi", "*.srt *.ass *.ssa *.sub *.txt"),
-                ("SRT podnapisi", "*.srt"),
-                ("ASS/SSA podnapisi", "*.ass *.ssa"),
-                ("Vse datoteke", "*.*")
-            ]
+        pot = self._odpri_dialog_datoteka(
+            naslov="Izberi datoteko podnapisov",
+            tipi=[("Podnapisi", "*.srt *.ass *.ssa *.sub *.txt")]
         )
         if pot:
             self.vnos_podnapis.delete(0, tk.END)
@@ -1920,11 +2056,11 @@ class BaMKV:
         # Ciljna datoteka
         osnovni_dir = os.path.dirname(self.mkv_pot)
         osnovni_ime = Path(self.mkv_pot).stem
-        ciljna_pot = filedialog.asksaveasfilename(
-            title="Shrani kot",
-            initialdir=osnovni_dir,
-            initialfile=f"_{osnovni_ime}.mkv",
-            filetypes=[("MKV datoteke", "*.mkv")]
+        ciljna_pot = self._shrani_dialog_datoteka(
+            naslov="Shrani kot",
+            zacetna_mapa=osnovni_dir,
+            privzeto_ime=f"_{osnovni_ime}.mkv",
+            tipi=[("MKV datoteke", "*.mkv")]
         )
         
         if not ciljna_pot:
@@ -1971,11 +2107,11 @@ class BaMKV:
         # Ciljna datoteka
         osnovni_dir = os.path.dirname(self.mkv_pot)
         osnovni_ime = Path(self.mkv_pot).stem
-        ciljna_pot = filedialog.asksaveasfilename(
-            title="Shrani kot",
-            initialdir=osnovni_dir,
-            initialfile=f"_{osnovni_ime}.mkv",
-            filetypes=[("MKV datoteke", "*.mkv")]
+        ciljna_pot = self._shrani_dialog_datoteka(
+            naslov="Shrani kot",
+            zacetna_mapa=osnovni_dir,
+            privzeto_ime=f"_{osnovni_ime}.mkv",
+            tipi=[("MKV datoteke", "*.mkv")]
         )
         
         if not ciljna_pot:
@@ -2048,11 +2184,11 @@ class BaMKV:
         # Ciljna datoteka
         osnovni_dir = os.path.dirname(self.mkv_pot)
         osnovni_ime = Path(self.mkv_pot).stem
-        ciljna_pot = filedialog.asksaveasfilename(
-            title="Shrani kot",
-            initialdir=osnovni_dir,
-            initialfile=f"_{osnovni_ime}.mkv",
-            filetypes=[("MKV datoteke", "*.mkv")]
+        ciljna_pot = self._shrani_dialog_datoteka(
+            naslov="Shrani kot",
+            zacetna_mapa=osnovni_dir,
+            privzeto_ime=f"_{osnovni_ime}.mkv",
+            tipi=[("MKV datoteke", "*.mkv")]
         )
         
         if not ciljna_pot:
