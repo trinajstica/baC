@@ -57,6 +57,35 @@ Hiter način za obdelavo trenutnega imenika:
 
 CLI poišče video datoteke (.mp4, .avi, .mov, ...), poišče pripadajoče `.srt` datoteke z enakim imenom, po potrebi pretvori zvok v AAC in ustvari `.mkv` z združenimi podnapisi.
 
+## Galerija slik 🖼️
+
+Kliknite na sličico za ogled v polni velikosti. (Klik odpre sliko v novi kartici.)
+
+<table>
+<tr>
+<td align="center">
+<a href="slika1.png" target="_blank"><img src="slika1.png" alt="slika1" width="200" /></a>
+</td>
+<td align="center">
+<a href="slika2.png" target="_blank"><img src="slika2.png" alt="slika2" width="200" /></a>
+</td>
+<td align="center">
+<a href="slika3.png" target="_blank"><img src="slika3.png" alt="slika3" width="200" /></a>
+</td>
+</tr>
+<tr>
+<td align="center">
+<a href="slika4.png" target="_blank"><img src="slika4.png" alt="slika4" width="200" /></a>
+</td>
+<td align="center">
+<a href="slika5.png" target="_blank"><img src="slika5.png" alt="slika5" width="200" /></a>
+</td>
+<td align="center">
+<a href="slika6.png" target="_blank"><img src="slika6.png" alt="slika6" width="200" /></a>
+</td>
+</tr>
+</table>
+
 ## Pogoste težave ❗
 
 > Če program opozori, da manjkajo orodja, namestite `ffmpeg` in `mkvtoolnix`. CLI zahteva `mkvmerge` in se bo ustavil, če ga ni.
