@@ -1,3 +1,4 @@
 # Ignored files
 build.sh
 .NAVODILA.md
+__pycache__
