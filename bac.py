@@ -1130,7 +1130,7 @@ class BaMKV:
                 
                 for stevilka, kodek in pretvorbe_zvoka.items():
                     kodeki_map = {"aac": "aac", "ac3": "ac3", "mp3": "libmp3lame"}
-                    ukaz_ff.extend([f"-c:{stevilka}", kodeki_map.get(kodek, "aac")])
+                    ukaz_ff.extend([f"-c:{stevilka}", kodeki_map.get(kodek, "ac3")])
                     if kodek != "flac":
                         ukaz_ff.extend([f"-b:{stevilka}", "192k"])
                 
@@ -1245,9 +1245,9 @@ class BaMKV:
         
         ttk.Label(okvir_avdio, text="Ciljni format:").grid(row=0, column=0, sticky="w", pady=5)
         self.avdio_format = ttk.Combobox(okvir_avdio, values=[
-            "aac", "ac3", "mp3", "opus", "flac", "vorbis", "kopija (brez pretvorbe)"
+            "ac3", "aac", "mp3", "opus", "flac", "vorbis", "kopija (brez pretvorbe)"
         ], width=25)
-        self.avdio_format.set("aac")
+        self.avdio_format.set("ac3")
         self.avdio_format.grid(row=0, column=1, sticky="w", padx=10, pady=5)
         
         ttk.Label(okvir_avdio, text="Bitna hitrost:").grid(row=1, column=0, sticky="w", pady=5)
@@ -1708,7 +1708,7 @@ class BaMKV:
                         variable=self.hitro_kopiraj).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
         
         self.hitro_aac = tk.BooleanVar(value=True)
-        ttk.Checkbutton(okvir_nast, text="Pretvori zvok v AAC (če ni že AAC)",
+        ttk.Checkbutton(okvir_nast, text="Pretvori zvok v AC3 (če ni že AC3)",
                         variable=self.hitro_aac).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
         
         # Okvir za gumb na dnu
@@ -1861,13 +1861,13 @@ class BaMKV:
             # Preveri audio kodek
             video_pot = next(d["pot"] for d in izbrane if d["vrsta"] == "Video")
             audio_kodek = self._pridobi_audio_kodek(video_pot)
-            potrebna_pretvorba_audio = self.hitro_aac.get() and audio_kodek and audio_kodek.lower() not in ["aac"]
+            potrebna_pretvorba_audio = self.hitro_aac.get() and audio_kodek and audio_kodek.lower() not in ["ac3"]
             
             jezik = self.hitro_jezik.get().split(" - ")[0] if self.hitro_jezik.get() else "und"
             
             # Če je potrebna pretvorba audio, uporabi ffmpeg najprej
             if potrebna_pretvorba_audio and self.ffmpeg:
-                self._nastavi_zasedeno("Pretvarjam zvok v AAC...")
+                self._nastavi_zasedeno("Pretvarjam zvok v AC3...")
                 
                 # Začasna datoteka za pretvorjen video
                 zacasna_pot = ciljna_pot.replace(".mkv", "_temp.mkv")
@@ -1883,7 +1883,7 @@ class BaMKV:
                 else:
                     ukaz_ff.extend(["-c:v", "libx264", "-crf", "23"])
                 
-                ukaz_ff.extend(["-c:a", "aac", "-b:a", "192k"])
+                ukaz_ff.extend(["-c:a", "ac3", "-b:a", "192k"])
                 ukaz_ff.append(zacasna_pot)
                 
                 subprocess.run(ukaz_ff, check=True, capture_output=True)
@@ -2152,7 +2152,7 @@ class BaMKV:
                     "aac": "aac", "ac3": "ac3", "mp3": "libmp3lame",
                     "opus": "libopus", "flac": "flac", "vorbis": "libvorbis"
                 }
-                ukaz.extend(["-c:a", kodeki.get(avdio_izbira, "aac")])
+                ukaz.extend(["-c:a", kodeki.get(avdio_izbira, "ac3")])
                 ukaz.extend(["-b:a", self.avdio_bitrate.get()])
             
             # Kopiraj podnapise
@@ -2255,15 +2255,15 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
         print("Napaka: mkvmerge ni nameščen.")
         sys.exit(1)
     
-    # Poišči video datoteke
+    # Poišči video datoteke rekurzivno
     video_koncnice = [".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpeg", ".mpg"]
     trenutni_dir = os.getcwd()
     
     video_datoteke = []
     mkv_datoteke = []
-    for datoteka in os.listdir(trenutni_dir):
-        pot = os.path.join(trenutni_dir, datoteka)
-        if os.path.isfile(pot):
+    for root, dirs, files in os.walk(trenutni_dir):
+        for datoteka in files:
+            pot = os.path.join(root, datoteka)
             koncnica = Path(datoteka).suffix.lower()
             if koncnica in video_koncnice:
                 video_datoteke.append(pot)
@@ -2271,13 +2271,13 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                 mkv_datoteke.append(pot)
     
     if not video_datoteke and not mkv_datoteke:
-        print("Ni video datotek v trenutnem imeniku.")
+        print("Ni video datotek v trenutnem imeniku ali podmapah.")
         sys.exit(0)
     
     if video_datoteke:
-        print(f"Najdenih {len(video_datoteke)} video datotek.")
+        print(f"Najdenih {len(video_datoteke)} video datotek (rekurzivno).")
     if mkv_datoteke:
-        print(f"Najdenih {len(mkv_datoteke)} MKV datotek za preverjanje.")
+        print(f"Najdenih {len(mkv_datoteke)} MKV datotek za preverjanje (rekurzivno).")
     
     uspesne = 0
     neuspesne = 0
@@ -2341,7 +2341,7 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
         # Določi potrebne akcije
         dodaj_podnapise = srt_pot and not ima_nase_podnapise
         nastavi_privzete = ima_nase_podnapise and not nasi_privzeti and indeks_za_privzet is not None
-        pretvori_audio = audio_kodek and audio_kodek.lower() not in ["aac"]
+        pretvori_audio = audio_kodek and audio_kodek.lower() not in ["ac3"]
         
         if not dodaj_podnapise and not nastavi_privzete and not pretvori_audio:
             # MKV je že v redu
@@ -2357,7 +2357,7 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
         if nastavi_privzete:
             print(f"  + nastavljam naše podnapise kot privzete (sled {indeks_za_privzet})")
         if pretvori_audio:
-            print(f"  + pretvarjam zvok ({audio_kodek} → AAC)")
+            print(f"  + pretvarjam zvok ({audio_kodek} → AC3)")
         
         try:
             zacasna_pot = mkv_pot.replace(".mkv", "_temp_bac.mkv")
@@ -2369,7 +2369,7 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                 else:
                     ukaz_ff = [ffmpeg, "-i", mkv_pot, "-y"]
                 
-                ukaz_ff.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-c:s", "copy"])
+                ukaz_ff.extend(["-c:v", "copy", "-c:a", "ac3", "-b:a", "192k", "-c:s", "copy"])
                 
                 if dodaj_podnapise and srt_pot:
                     # Dodaj še podnapise z ffmpeg
@@ -2428,21 +2428,22 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
     # Najprej obdelaj obstoječe MKV datoteke
     for mkv_pot in mkv_datoteke:
         osnovni_ime = Path(mkv_pot).stem
+        video_dir = os.path.dirname(mkv_pot)
         
-        # Poišči pripadajoči SRT
+        # Poišči pripadajoči SRT v isti mapi
         srt_pot = None
         for koncnica in [".srt", ".sl.srt", ".slv.srt", "_sl.srt", "_slv.srt"]:
-            mozna_pot = os.path.join(trenutni_dir, f"{osnovni_ime}{koncnica}")
+            mozna_pot = os.path.join(video_dir, f"{osnovni_ime}{koncnica}")
             if os.path.exists(mozna_pot):
                 srt_pot = mozna_pot
                 break
         
         if not srt_pot:
-            for datoteka in os.listdir(trenutni_dir):
+            for datoteka in os.listdir(video_dir):
                 if datoteka.lower().endswith(".srt"):
                     dat_stem = Path(datoteka).stem
                     if dat_stem == osnovni_ime or dat_stem.startswith(osnovni_ime + ".") or dat_stem.startswith(osnovni_ime + "_"):
-                        srt_pot = os.path.join(trenutni_dir, datoteka)
+                        srt_pot = os.path.join(video_dir, datoteka)
                         break
         
         if obdelaj_obstojeci_mkv(mkv_pot, srt_pot, izbrisi_izvorne):
@@ -2452,27 +2453,28 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
     
     for video_pot in video_datoteke:
         osnovni_ime = Path(video_pot).stem
-        ciljna_pot = os.path.join(trenutni_dir, f"{osnovni_ime}.mkv")
+        video_dir = os.path.dirname(video_pot)
+        ciljna_pot = os.path.join(video_dir, f"{osnovni_ime}.mkv")
         
         # Če MKV že obstaja, preskoči (že obdelano zgoraj)
         if os.path.exists(ciljna_pot):
             continue
         
-        # Poišči pripadajoči SRT
+        # Poišči pripadajoči SRT v isti mapi
         srt_pot = None
         for koncnica in [".srt", ".sl.srt", ".slv.srt", "_sl.srt", "_slv.srt"]:
-            mozna_pot = os.path.join(trenutni_dir, f"{osnovni_ime}{koncnica}")
+            mozna_pot = os.path.join(video_dir, f"{osnovni_ime}{koncnica}")
             if os.path.exists(mozna_pot):
                 srt_pot = mozna_pot
                 break
         
         # Poskusi najti SRT z enakim začetkom imena
         if not srt_pot:
-            for datoteka in os.listdir(trenutni_dir):
+            for datoteka in os.listdir(video_dir):
                 if datoteka.lower().endswith(".srt"):
                     dat_stem = Path(datoteka).stem
                     if dat_stem == osnovni_ime or dat_stem.startswith(osnovni_ime + ".") or dat_stem.startswith(osnovni_ime + "_"):
-                        srt_pot = os.path.join(trenutni_dir, datoteka)
+                        srt_pot = os.path.join(video_dir, datoteka)
                         break
         
         print(f"Pretvarjam: {Path(video_pot).name}")
@@ -2498,13 +2500,13 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                 except Exception:
                     pass
             
-            potrebna_pretvorba_audio = audio_kodek and audio_kodek.lower() not in ["aac"]
+            potrebna_pretvorba_audio = audio_kodek and audio_kodek.lower() not in ["ac3"]
             vhodna_datoteka = video_pot
             zacasna_pot = None
             
             # Če je potrebna pretvorba zvoka
             if potrebna_pretvorba_audio and ffmpeg:
-                print(f"  Pretvarjam zvok ({audio_kodek} → AAC)...")
+                print(f"  Pretvarjam zvok ({audio_kodek} → AC3)...")
                 zacasna_pot = ciljna_pot.replace(".mkv", "_temp_audio.mkv")
                 
                 if "flatpak run" in ffmpeg:
@@ -2513,7 +2515,7 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                     ukaz_ff = [ffmpeg, "-i", video_pot, "-y"]
                 
                 # -sn onemogoči kopiranje podnapisov iz izvorne datoteke
-                ukaz_ff.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-sn"])
+                ukaz_ff.extend(["-c:v", "copy", "-c:a", "ac3", "-b:a", "192k", "-sn"])
                 ukaz_ff.append(zacasna_pot)
                 
                 subprocess.run(ukaz_ff, check=True, capture_output=True)
