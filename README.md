@@ -1,6 +1,6 @@
-# baConverter (bac) 🔧
+# baC 🔧
 
-`baConverter` (skripta `bac.py`, ukaz `bac`) je orodje za urejanje in združevanje MKV datotek. Ponuja grafični vmesnik za urejanje MKV in uporabno ukazno vrstico za hitro obdelavo video vsebin v trenutnem imeniku.
+`baC` (skripta `bac.py`, ukaz `bac`) je orodje za urejanje in združevanje MKV datotek. Ponuja grafični vmesnik za urejanje MKV in uporabno ukazno vrstico za hitro obdelavo video vsebin v trenutnem imeniku.
 
 ## Funkcije ✅
 
