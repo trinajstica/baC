@@ -64,24 +64,24 @@ Kliknite na sličico za ogled v polni velikosti. (Klik odpre sliko v novi kartic
 <table>
 <tr>
 <td align="center">
-<a href="slika1.png" target="_blank"><img src="slika1.png" alt="slika1" width="200" /></a>
+<a href="slike/slika1.png" target="_blank"><img src="slike/slika1.png" alt="slika1" width="200" /></a>
 </td>
 <td align="center">
-<a href="slika2.png" target="_blank"><img src="slika2.png" alt="slika2" width="200" /></a>
+<a href="slike/slika2.png" target="_blank"><img src="slike/slika2.png" alt="slika2" width="200" /></a>
 </td>
 <td align="center">
-<a href="slika3.png" target="_blank"><img src="slika3.png" alt="slika3" width="200" /></a>
+<a href="slike/slika3.png" target="_blank"><img src="slike/slika3.png" alt="slika3" width="200" /></a>
 </td>
 </tr>
 <tr>
 <td align="center">
-<a href="slika4.png" target="_blank"><img src="slika4.png" alt="slika4" width="200" /></a>
+<a href="slike/slika4.png" target="_blank"><img src="slike/slika4.png" alt="slika4" width="200" /></a>
 </td>
 <td align="center">
-<a href="slika5.png" target="_blank"><img src="slika5.png" alt="slika5" width="200" /></a>
+<a href="slike/slika5.png" target="_blank"><img src="slike/slika5.png" alt="slika5" width="200" /></a>
 </td>
 <td align="center">
-<a href="slika6.png" target="_blank"><img src="slika6.png" alt="slika6" width="200" /></a>
+<a href="slike/slika6.png" target="_blank"><img src="slike/slika6.png" alt="slika6" width="200" /></a>
 </td>
 </tr>
 </table>
