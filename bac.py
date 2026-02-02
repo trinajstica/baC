@@ -9,6 +9,8 @@ Uporaba:
   bac -qq      - Kot -q, ampak izbriše izvorne datoteke po pretvorbi
 """
 
+verzija = "v1.0.0"
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import subprocess
@@ -23,7 +25,7 @@ from pathlib import Path
 class BaMKV:
     def __init__(self, root, prisiljena_tema=None):
         self.root = root
-        self.root.title("baC - Urejanje MKV datotek")
+        self.root.title(f"baC {verzija} - Urejanje MKV datotek")
         self.root.geometry("1200x800")
         self.root.minsize(800, 600)
         
@@ -1651,6 +1653,8 @@ class BaMKV:
                   font=("TkDefaultFont", 9)).pack(anchor="center")
         ttk.Label(okvir_glava, text="Izdelava: Jan, 2026", 
                   font=("TkDefaultFont", 9)).pack(anchor="center")
+        ttk.Label(okvir_glava, text=f"Verzija: {verzija}", 
+                  font=("TkDefaultFont", 9)).pack(anchor="center")
     
     def _ustvari_hitro_pretvorbo(self, okvir):
         """Ustvari zavihek za hitro pretvorbo v MKV."""
@@ -2581,7 +2585,7 @@ def main():
             return help_text
 
     parser = argparse.ArgumentParser(
-        description="baC - Orodje za urejanje MKV datotek",
+        description=f"baC {verzija} - Orodje za urejanje MKV datotek",
         formatter_class=SloveneHelpFormatter,
         epilog="""
 Primeri:
@@ -2592,6 +2596,7 @@ Primeri:
         add_help=False
     )
     parser.add_argument("-h", "--help", action="help", help="Prikaži to sporočilo o pomoči in izstopi.")
+    parser.add_argument("-V", "--version", action="version", version=f"baC {verzija}", help="Prikaži verzijo in izstopi.")
     parser.add_argument("-q", "--quick", action="count", default=0,
                         help="Hitro združi video+srt v MKV (-q ohrani, -qq izbriše izvorne)")
     tema_skupina = parser.add_mutually_exclusive_group()
