@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 baC - Orodje za urejanje MKV datotek
-Avtor: SimOne
+Avtor: BArko & SimOne
 
 Uporaba:
   bac          - Zaženi GUI
@@ -1647,7 +1647,7 @@ class BaMKV:
         
         ttk.Label(okvir_glava, text="Idejni vodja: BArko", 
                   font=("TkDefaultFont", 9)).pack(anchor="center")
-        ttk.Label(okvir_glava, text="Programiranje: SimOne", 
+        ttk.Label(okvir_glava, text="Programiranje: BArko & SimOne", 
                   font=("TkDefaultFont", 9)).pack(anchor="center")
         ttk.Label(okvir_glava, text="Izdelava: Jan, 2026", 
                   font=("TkDefaultFont", 9)).pack(anchor="center")
