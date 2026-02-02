@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-baConverter - Orodje za urejanje MKV datotek
+baC - Orodje za urejanje MKV datotek
 Avtor: SimOne
 
 Uporaba:
@@ -2581,7 +2581,7 @@ def main():
             return help_text
 
     parser = argparse.ArgumentParser(
-        description="baConverter - Orodje za urejanje MKV datotek",
+        description="baC - Orodje za urejanje MKV datotek",
         formatter_class=SloveneHelpFormatter,
         epilog="""
 Primeri:
