@@ -2364,19 +2364,26 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
             
             if pretvori_audio and ffmpeg:
                 # Uporabi ffmpeg za pretvorbo zvoka
+                # POMEMBNO: vsi -i argumenti morajo biti pred opcijami za izhod
                 if "flatpak run" in ffmpeg:
-                    ukaz_ff = ffmpeg.split() + ["-i", mkv_pot, "-y"]
+                    ukaz_ff = ffmpeg.split() + ["-i", mkv_pot]
                 else:
-                    ukaz_ff = [ffmpeg, "-i", mkv_pot, "-y"]
+                    ukaz_ff = [ffmpeg, "-i", mkv_pot]
                 
+                if dodaj_podnapise and srt_pot:
+                    # Drugi vhod mora biti pred opcijami za izhod
+                    ukaz_ff.extend(["-i", srt_pot])
+                
+                ukaz_ff.append("-y")
                 ukaz_ff.extend(["-c:v", "copy", "-c:a", "ac3", "-b:a", "192k", "-c:s", "copy"])
                 
                 if dodaj_podnapise and srt_pot:
-                    # Dodaj še podnapise z ffmpeg
-                    ukaz_ff.extend(["-i", srt_pot])
-                    ukaz_ff.extend(["-map", "0:v", "-map", "0:a", "-map", "0:s?", "-map", "1:0"])
+                    # SRT mapiramo PRED obstoječimi podnapisi, da je nova sled prva (indeks 0)
+                    ukaz_ff.extend(["-map", "0:v", "-map", "0:a", "-map", "1:0", "-map", "0:s?"])
                     ukaz_ff.extend(["-metadata:s:s:0", "language=slv"])
                     ukaz_ff.extend(["-disposition:s:0", "default"])
+                    # Obstoječe podnapise nastavimo kot ne-privzete
+                    ukaz_ff.extend(["-disposition:s:1", "0"])
                 elif nastavi_privzete and indeks_za_privzet is not None:
                     ukaz_ff.extend([f"-disposition:s:{indeks_za_privzet}", "default"])
                 
