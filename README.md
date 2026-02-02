@@ -27,6 +27,13 @@ sudo apt install -y ffmpeg mkvtoolnix python3-tk
 python3 -m pip install --user tkinterdnd2
 ```
 
+### Namestitev (primer: Solus)
+
+```bash
+sudo eopkg install -y ffmpeg mkvtoolnix python3-tkinter
+python3 -m pip install --user tkinterdnd2
+```
+
 Za uporabnike Flatpak-a (opcijsko):
 
 ```bash
