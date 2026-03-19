@@ -2293,7 +2293,7 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
     def preveri_mkv_sledi(mkv_pot):
         """Preveri sledi v MKV datoteki - vrne (ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_najboljsega)."""
         if not ffprobe:
-            return None, None, False, None
+            return None, None, False, None, 0
         try:
             if "flatpak run" in ffprobe:
                 deli = ffprobe.split()
@@ -2332,16 +2332,17 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                     audio_kodek = sled.get("codec_name")
             
             indeks_za_privzet = najboljsi_podnapis[1] if najboljsi_podnapis else None
-            return ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet
+            return ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet, sub_indeks
         except Exception:
-            return None, None, False, None
+            return None, None, False, None, 0
     
     def obdelaj_obstojeci_mkv(mkv_pot, srt_pot, izbrisi_izvorne):
         """Obdelaj obstoječo MKV datoteko - doda podnapise, pretvori audio če potrebno."""
         osnovni_ime = Path(mkv_pot).stem
         
-        ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet = preveri_mkv_sledi(mkv_pot)
-        
+        ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet, sub_indeks = preveri_mkv_sledi(mkv_pot)
+        sub_indeks = sub_indeks or 0
+
         # Določi potrebne akcije
         dodaj_podnapise = srt_pot and not ima_nase_podnapise
         nastavi_privzete = ima_nase_podnapise and not nasi_privzeti and indeks_za_privzet is not None
@@ -2387,7 +2388,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                     ukaz_ff.extend(["-metadata:s:s:0", "language=slv"])
                     ukaz_ff.extend(["-disposition:s:0", "default"])
                     # Obstoječe podnapise nastavimo kot ne-privzete
-                    ukaz_ff.extend(["-disposition:s:1", "0"])
+                    for i in range(1, sub_indeks + 1):
+                        ukaz_ff.extend([f"-disposition:s:{i}", "0"])
                 elif nastavi_privzete and indeks_za_privzet is not None:
                     ukaz_ff.extend([f"-disposition:s:{indeks_za_privzet}", "default"])
                 
@@ -2401,10 +2403,13 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                 else:
                     ukaz = [mkvmerge, "-o", zacasna_pot]
                 
-                if nastavi_privzete and not dodaj_podnapise and indeks_za_privzet is not None:
-                    # Nastavi naše podnapise kot privzete (subtitle track indeks)
-                    ukaz.extend([f"--default-track-flag", f"s{indeks_za_privzet}:yes"])
-                
+                # Nastavi vse obstoječe podnapisne sledi: naše na yes, ostale na no
+                for i in range(sub_indeks):
+                    if nastavi_privzete and not dodaj_podnapise and i == indeks_za_privzet:
+                        ukaz.extend(["--default-track-flag", f"s{i}:yes"])
+                    else:
+                        ukaz.extend(["--default-track-flag", f"s{i}:no"])
+
                 ukaz.append(mkv_pot)
                 
                 if dodaj_podnapise and srt_pot:
