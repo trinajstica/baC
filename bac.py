@@ -2293,7 +2293,7 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
     def preveri_mkv_sledi(mkv_pot):
         """Preveri sledi v MKV datoteki - vrne (ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_najboljsega)."""
         if not ffprobe:
-            return None, None, False, None, 0
+            return None, None, False, None, 0, []
         try:
             if "flatpak run" in ffprobe:
                 deli = ffprobe.split()
@@ -2307,7 +2307,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
             ima_nase_podnapise = False
             nasi_privzeti = False
             audio_kodek = None
-            najboljsi_podnapis = None  # (prioriteta, indeks)
+            najboljsi_podnapis = None  # (prioriteta, subtitle-relativen indeks)
+            sub_track_ids = []  # Globalni track ID-ji subtitle sledi (za mkvmerge)
             
             sub_indeks = 0  # Šteje samo subtitle sledi
             for sled in sledi:
@@ -2315,6 +2316,7 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                     jezik = sled.get("tags", {}).get("language", "").lower()
                     disposition = sled.get("disposition", {})
                     je_privzet = disposition.get("default", 0) == 1
+                    sub_track_ids.append(sled.get("index", sub_indeks))
                     
                     if jezik in nasi_jeziki:
                         ima_nase_podnapise = True
@@ -2332,16 +2334,17 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                     audio_kodek = sled.get("codec_name")
             
             indeks_za_privzet = najboljsi_podnapis[1] if najboljsi_podnapis else None
-            return ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet, sub_indeks
+            return ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet, sub_indeks, sub_track_ids
         except Exception:
-            return None, None, False, None, 0
+            return None, None, False, None, 0, []
     
     def obdelaj_obstojeci_mkv(mkv_pot, srt_pot, izbrisi_izvorne):
         """Obdelaj obstoječo MKV datoteko - doda podnapise, pretvori audio če potrebno."""
         osnovni_ime = Path(mkv_pot).stem
         
-        ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet, sub_indeks = preveri_mkv_sledi(mkv_pot)
+        ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_za_privzet, sub_indeks, sub_track_ids = preveri_mkv_sledi(mkv_pot)
         sub_indeks = sub_indeks or 0
+        sub_track_ids = sub_track_ids or []
 
         # Določi potrebne akcije
         dodaj_podnapise = srt_pot and not ima_nase_podnapise
@@ -2405,10 +2408,11 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                 
                 # Nastavi vse obstoječe podnapisne sledi: naše na yes, ostale na no
                 for i in range(sub_indeks):
+                    track_id = sub_track_ids[i] if i < len(sub_track_ids) else i
                     if nastavi_privzete and not dodaj_podnapise and i == indeks_za_privzet:
-                        ukaz.extend(["--default-track-flag", f"s{i}:yes"])
+                        ukaz.extend(["--default-track-flag", f"{track_id}:yes"])
                     else:
-                        ukaz.extend(["--default-track-flag", f"s{i}:no"])
+                        ukaz.extend(["--default-track-flag", f"{track_id}:no"])
 
                 ukaz.append(mkv_pot)
                 
@@ -2434,8 +2438,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
             return True
             
         except subprocess.CalledProcessError as e:
-            napaka = e.stderr.decode() if e.stderr else str(e)
-            print(f"  ✗ Napaka: {napaka[:100]}")
+            napaka = e.stderr.decode() if e.stderr else (e.stdout.decode() if e.stdout else str(e))
+            print(f"  ✗ Napaka: {napaka[:300]}")
             # Počisti morebitne začasne datoteke
             if os.path.exists(zacasna_pot):
                 os.remove(zacasna_pot)
