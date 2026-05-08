@@ -781,7 +781,7 @@ class BaMKV:
 
     def _prikazi_dialog_podnapisi(self, pot):
         """Prikaže dialog za nastavitve podnapisov."""
-        dialog = self._ustvari_dialog("Nastavitve podnapisov", 350, 180)
+        dialog = self._ustvari_dialog("Nastavitve podnapisov", 350, 230)
 
         ttk.Label(dialog, text="Jezik:").pack(pady=(10, 5))
         jezik_izbira = ttk.Combobox(
@@ -802,12 +802,22 @@ class BaMKV:
             pady=5
         )
 
+        zamenjaj_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            dialog, text="Zamenjaj vse obstoječe podnapise", variable=zamenjaj_var
+        ).pack(pady=5)
+
         def potrdi():
             jezik = jezik_izbira.get().split(" - ")[0]
             self._dodaj_operacijo(
                 "Dodaj podnapise",
                 f"{Path(pot).name} ({jezik})",
-                {"pot": pot, "jezik": jezik, "privzet": privzet_var.get()},
+                {
+                    "pot": pot,
+                    "jezik": jezik,
+                    "privzet": privzet_var.get(),
+                    "zamenjaj": zamenjaj_var.get(),
+                },
             )
             dialog.destroy()
 
@@ -1353,6 +1363,11 @@ class BaMKV:
                 elif tip == "Dodaj zvok":
                     dodatne_datoteke.append({"vrsta": "audio", **podatki})
 
+            zamenjaj_vse_podnapise = any(
+                op["tip"] == "Dodaj podnapise" and op["podatki"].get("zamenjaj")
+                for op in self.cakalne_operacije
+            )
+
             # Če je potrebna pretvorba zvoka, najprej uporabi ffmpeg
             vhodna_datoteka = self.mkv_pot
             zacasna_pot = None
@@ -1435,6 +1450,8 @@ class BaMKV:
                 if stevilka:
                     ukaz.extend(["--default-track", f"{stevilka}:yes"])
 
+            if zamenjaj_vse_podnapise:
+                ukaz.extend(["--no-subtitles"])
             ukaz.append(vhodna_datoteka)
 
             # Dodatne datoteke
@@ -1510,6 +1527,13 @@ class BaMKV:
             text="Nastavi kot privzet podnapis",
             variable=self.privzet_podnapis,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
+
+        self.zamenjaj_podnapise = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            okvir_nastavitve,
+            text="Zamenjaj vse obstoječe podnapise",
+            variable=self.zamenjaj_podnapise,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
 
         ttk.Button(okvir, text="Dodaj podnapise", command=self._dodaj_podnapise).pack(
             pady=20
@@ -2122,6 +2146,20 @@ class BaMKV:
             variable=self.hitro_aac,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
 
+        self.hitro_izpusti_podnapise = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            okvir_nast,
+            text="Izpusti ostale podnapise iz vira",
+            variable=self.hitro_izpusti_podnapise,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=5)
+
+        self.hitro_samo_prvi_zvok = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            okvir_nast,
+            text="Ohrani samo prvi zvok iz vira",
+            variable=self.hitro_samo_prvi_zvok,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=5)
+
         # Okvir za gumb na dnu
         okvir_gumb = ttk.Frame(okvir)
         okvir_gumb.pack(fill="x", pady=10)
@@ -2236,43 +2274,33 @@ class BaMKV:
                 vrednosti[0] = "☑"
                 self.drevo_hitro.item(vrstica, values=vrednosti)
 
-    def _pridobi_audio_kodek(self, pot):
-        """Pridobi audio kodek iz datoteke."""
+    def _pridobi_audio_podatke(self, pot):
+        """Pridobi audio kodek in indeks prvega audio streama - vrne (kodek, indeks)."""
         if not self.ffprobe:
-            return None
+            return None, None
 
         try:
             if "flatpak run" in self.ffprobe:
                 deli = self.ffprobe.split()
                 ukaz = deli + [
-                    "-v",
-                    "quiet",
-                    "-select_streams",
-                    "a:0",
-                    "-show_entries",
-                    "stream=codec_name",
-                    "-of",
-                    "default=noprint_wrappers=1:nokey=1",
-                    pot,
+                    "-v", "quiet", "-print_format", "json",
+                    "-show_streams", pot,
                 ]
             else:
                 ukaz = [
                     self.ffprobe,
-                    "-v",
-                    "quiet",
-                    "-select_streams",
-                    "a:0",
-                    "-show_entries",
-                    "stream=codec_name",
-                    "-of",
-                    "default=noprint_wrappers=1:nokey=1",
-                    pot,
+                    "-v", "quiet", "-print_format", "json",
+                    "-show_streams", pot,
                 ]
 
             rezultat = subprocess.run(ukaz, capture_output=True, text=True, check=True)
-            return rezultat.stdout.strip()
+            podatki = json.loads(rezultat.stdout)
+            for sled in podatki.get("streams", []):
+                if sled.get("codec_type") == "audio":
+                    return sled.get("codec_name"), sled.get("index")
+            return None, None
         except Exception:
-            return None
+            return None, None
 
     def _izvedi_hitro_pretvorbo(self):
         """Izvede hitro pretvorbo v MKV."""
@@ -2320,9 +2348,9 @@ class BaMKV:
         self._nastavi_zasedeno("Pretvarjam v MKV...")
 
         try:
-            # Preveri audio kodek
+            # Preveri audio kodek in indeks prvega audio streama
             video_pot = next(d["pot"] for d in izbrane if d["vrsta"] == "Video")
-            audio_kodek = self._pridobi_audio_kodek(video_pot)
+            audio_kodek, prvi_audio_id = self._pridobi_audio_podatke(video_pot)
             potrebna_pretvorba_audio = (
                 self.hitro_aac.get()
                 and audio_kodek
@@ -2375,7 +2403,16 @@ class BaMKV:
 
             # Dodaj datoteke
             for dat in izbrane:
-                if dat["vrsta"] == "Podnapisi":
+                if dat["vrsta"] == "Video":
+                    if self.hitro_izpusti_podnapise.get():
+                        ukaz.extend(["--no-subtitles"])
+                    if (
+                        self.hitro_samo_prvi_zvok.get()
+                        and not potrebna_pretvorba_audio
+                        and prvi_audio_id is not None
+                    ):
+                        ukaz.extend(["--audio-tracks", str(prvi_audio_id)])
+                elif dat["vrsta"] == "Podnapisi":
                     if jezik:
                         ukaz.extend(["--language", f"0:{jezik}"])
                     if self.hitro_privzet.get():
@@ -2571,9 +2608,13 @@ class BaMKV:
 
         try:
             if "flatpak run" in self.mkvmerge:
-                ukaz = self.mkvmerge.split() + ["-o", ciljna_pot, self.mkv_pot]
+                ukaz = self.mkvmerge.split() + ["-o", ciljna_pot]
             else:
-                ukaz = [self.mkvmerge, "-o", ciljna_pot, self.mkv_pot]
+                ukaz = [self.mkvmerge, "-o", ciljna_pot]
+
+            if self.zamenjaj_podnapise.get():
+                ukaz.extend(["--no-subtitles"])
+            ukaz.append(self.mkv_pot)
 
             if jezik:
                 ukaz.extend(["--language", f"0:{jezik}"])
