@@ -17,21 +17,21 @@
 - `mkvmerge` (MKVToolNix) — obvezno za združevanje in CLI
 - `ffmpeg` in `ffprobe` — priporočeno za pretvorbe in prepoznavo kodakov
 - `python3-tk` (tkinter) — za GUI
-- opcijsko: `tkinterdnd2` ali `tkdnd` za povleci in spusti v GUI
+- opcijsko: `tkinterdnd2>=0.4.4` ali `tkdnd` za povleci in spusti v GUI
 
 ### Namestitev (primer: Debian/Ubuntu)
 
 ```bash
 sudo apt update
 sudo apt install -y ffmpeg mkvtoolnix python3-tk
-python3 -m pip install --user tkinterdnd2
+python3 -m pip install --user "tkinterdnd2>=0.4.4"
 ```
 
 ### Namestitev (primer: Solus)
 
 ```bash
 sudo eopkg install -y ffmpeg mkvtoolnix python3-tkinter
-python3 -m pip install --user tkinterdnd2
+python3 -m pip install --user "tkinterdnd2>=0.4.4"
 ```
 
 Za uporabnike Flatpak-a (opcijsko):
@@ -100,4 +100,3 @@ Kliknite na sličico za ogled v polni velikosti. (Klik odpre sliko v novi kartic
 ## Licenca
 
 Projekt je licenciran pod MIT licenco. Glej `LICENSE`.
-

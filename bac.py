@@ -9,7 +9,7 @@ Uporaba:
   bac -qq      - Kot -q, ampak izbriše izvorne datoteke po pretvorbi
 """
 
-verzija = "v1.0.2"
+verzija = "v1.0.4"
 
 import argparse
 import json
@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
+from types import SimpleNamespace
 from tkinter import filedialog, messagebox, ttk
 
 
@@ -32,6 +33,9 @@ class BaMKV:
         self.mkv_pot = None
         self.stevilke_sledi = []
         self.prisiljena_tema = prisiljena_tema
+        self._drag_drop_nastavljen = False
+        self._drop_callback_po_widgetu = {}
+        self._wayland_drop_funcid = None
 
         # Zaznaj temo in nastavi barve
         self._nastavi_temo()
@@ -481,31 +485,222 @@ class BaMKV:
 
     def _nastavi_drag_drop(self):
         """Nastavi povleci in spusti za celotno aplikacijo."""
+        # Zagotovi, da je okno v celoti realizirano pred registracijo DnD tarč
+        self.root.update_idletasks()
+        self._registriraj_drag_drop()
+
+    def _drop_tarce(self):
+        """Vrne widgete, ki sprejemajo povlečene datoteke."""
+        return [
+            (self.root, self._drop_mkv),
+            (self.okvir_datoteka, self._drop_mkv),
+            (self.vnos_pot, self._drop_mkv),
+            (self.gumb_odpri_mkv, self._drop_mkv),
+            (self.vnos_podnapis, self._drop_podnapis),
+            (self.vnos_hitro_video, self._drop_hitro_video),
+            (self.drevo_vhod, self._drop_vhodne),
+            (self.gumb_podnapisi, self._drop_op_podnapisi),
+            (self.gumb_zvok, self._drop_op_zvok),
+        ]
+
+    def _sprejmi_drop(self, dogodek=None):
+        """Potrdi DnD akcijo pred dejanskim spustom."""
+        return "copy"
+
+    def _izvedi_drop(self, callback, dogodek):
+        callback(dogodek)
+        return "copy"
+
+    def _wayland_cached_drop(self, widget_path, podatki, x_root, y_root):
+        """Fallback za Wayland/XWayland, ko tkdnd izgubi selection ob prvem dropu."""
+        callback = self._drop_callback_po_widgetu.get(widget_path)
+        widget = None
+
+        try:
+            widget = self.root.nametowidget(widget_path)
+        except KeyError:
+            widget = self.root
+
+        while callback is None and widget is not self.root:
+            try:
+                widget = widget.nametowidget(widget.winfo_parent())
+            except KeyError:
+                widget = self.root
+            callback = self._drop_callback_po_widgetu.get(getattr(widget, "_w", "."))
+
+        if callback is None:
+            return "refuse_drop"
+
+        dogodek = SimpleNamespace(
+            action="copy",
+            actions=("copy", "move", "link", "ask", "private"),
+            data=podatki,
+            name="<<Drop>>",
+            type="text/uri-list",
+            types=("text/uri-list",),
+            widget=widget,
+            x_root=int(x_root),
+            y_root=int(y_root),
+        )
+        return self._izvedi_drop(callback, dogodek)
+
+    def _registriraj_drag_drop_tarco(self, widget, callback, tip_datotek):
+        widget.drop_target_register(tip_datotek)
+        widget.dnd_bind("<<DropEnter>>", self._sprejmi_drop)
+        widget.dnd_bind("<<DropPosition>>", self._sprejmi_drop)
+        widget.dnd_bind(
+            "<<Drop>>",
+            lambda dogodek, cb=callback: self._izvedi_drop(cb, dogodek),
+        )
+
+    def _popravi_wayland_prvi_drop(self):
+        """Na Wayland/XWayland inicializira XDND tarčo tudi brez prvega Position eventa."""
+        if (
+            self.root.tk.call("tk", "windowingsystem") != "x11"
+            or not os.environ.get("WAYLAND_DISPLAY")
+        ):
+            return
+
+        if self._wayland_drop_funcid is None:
+            self._wayland_drop_funcid = self.root.register(self._wayland_cached_drop)
+
+        self.root.tk.eval(
+            r"""
+            if {[namespace exists ::tkdnd::xdnd]
+                && [llength [info commands ::tkdnd::xdnd::HandleXdndDrop]]
+                && ![info exists ::tkdnd::xdnd::_bac_first_drop_patch]} {
+                set ::tkdnd::xdnd::_bac_first_drop_patch 1
+                rename ::tkdnd::xdnd::HandleXdndDrop ::tkdnd::xdnd::HandleXdndDrop_bac_orig
+
+                proc ::tkdnd::xdnd::HandleXdndDrop { time } {
+                    set current_target [::tkdnd::generic::GetDropTarget]
+
+                    if {[string length $current_target]} {
+                        catch {::tkdnd::generic::GetDroppedData $time} cached_data
+                    }
+
+                    if {![string length $current_target]} {
+                        if {![catch {winfo pointerxy .} xy] && [llength $xy] == 2} {
+                            set rootX [lindex $xy 0]
+                            set rootY [lindex $xy 1]
+                            set containing [winfo containing -displayof . $rootX $rootY]
+
+                            if {[string length $containing]} {
+                                catch {
+                                    foreach {drop_target common_source common_target} \
+                                        [::tkdnd::generic::FindWindowWithCommonTypes \
+                                            $containing $::tkdnd::generic::_typelist] {
+                                            break
+                                        }
+
+                                    if {[string length $drop_target] && [llength $common_source]} {
+                                        set ::tkdnd::generic::_drop_target $drop_target
+                                        set ::tkdnd::generic::_common_drag_source_types $common_source
+                                        set ::tkdnd::generic::_common_drop_target_types $common_target
+                                        set ::tkdnd::generic::_last_mouse_root_x $rootX
+                                        set ::tkdnd::generic::_last_mouse_root_y $rootY
+                                        set ::tkdnd::generic::_action copy
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if {[catch {
+                        set pressedkeys [::tkdnd::xdnd::GetPressedKeys [::tkdnd::generic::GetDropTarget]]
+                    }]} {
+                        set pressedkeys {}
+                    }
+
+                    set source [::tkdnd::generic::GetDragSource]
+                    set target [::tkdnd::generic::GetDropTarget]
+                    if {[string length $target]} {
+                        catch {
+                            foreach {resolved_target common_source common_target} \
+                                [::tkdnd::generic::FindWindowWithCommonTypes \
+                                    $target $::tkdnd::generic::_typelist] {
+                                    break
+                                }
+
+                            if {[string length $resolved_target] && [llength $common_source]} {
+                                set target $resolved_target
+                                set ::tkdnd::generic::_drop_target $resolved_target
+                                set ::tkdnd::generic::_common_drag_source_types $common_source
+                                set ::tkdnd::generic::_common_drop_target_types $common_target
+                                set ::tkdnd::generic::_action copy
+                            }
+                        }
+                    }
+                    set common_types [::tkdnd::generic::GetDragSourceCommonTypes]
+
+                    if {![catch {
+                        ::tkdnd::xdnd::GetDroppedData $source $target $common_types $time
+                    } fresh_data]} {
+                        ::tkdnd::generic::SetDroppedData $fresh_data
+                        set cached_data $fresh_data
+                    } elseif {[info exists cached_data] && [string length $cached_data]} {
+                        ::tkdnd::generic::SetDroppedData $cached_data
+                    }
+
+                    set rootX $::tkdnd::generic::_last_mouse_root_x
+                    set rootY $::tkdnd::generic::_last_mouse_root_y
+                    if {![string length $rootX] || ![string length $rootY]} {
+                        if {![catch {winfo pointerxy .} xy] && [llength $xy] == 2} {
+                            set rootX [lindex $xy 0]
+                            set rootY [lindex $xy 1]
+                        } else {
+                            set rootX 0
+                            set rootY 0
+                        }
+                    }
+
+                    set code [catch {
+                        ::tkdnd::generic::HandleDrop {} {} $pressedkeys $rootX $rootY $time
+                    } result options]
+
+                    if {$code} {
+                        return -options $options $result
+                    }
+
+                    if {$result eq "refuse_drop"
+                        && [info exists ::tkdnd::xdnd::_bac_cached_drop_cmd]
+                        && [info exists cached_data]
+                        && [string length $cached_data]
+                        && [string length $target]} {
+                        return [uplevel #0 [list \
+                            $::tkdnd::xdnd::_bac_cached_drop_cmd \
+                            $target \
+                            $cached_data \
+                            $rootX \
+                            $rootY \
+                        ]]
+                    }
+                    return $result
+                }
+            }
+            """
+        )
+        self.root.tk.call(
+            "set", "::tkdnd::xdnd::_bac_cached_drop_cmd", self._wayland_drop_funcid
+        )
+
+    def _registriraj_drag_drop(self):
+        """Registrira DnD tarče, ko Tk že obdela začetni izris."""
+        if self._drag_drop_nastavljen:
+            return
         try:
             # Poskusi uvoziti tkinterdnd2
             from tkinterdnd2 import DND_FILES
 
-            # Glavno okno - MKV datoteka
-            self.vnos_pot.drop_target_register(DND_FILES)
-            self.vnos_pot.dnd_bind("<<Drop>>", self._drop_mkv)
+            self._drop_callback_po_widgetu = {
+                widget._w: callback for widget, callback in self._drop_tarce()
+            }
+            self._popravi_wayland_prvi_drop()
 
-            # Podnapisi
-            self.vnos_podnapis.drop_target_register(DND_FILES)
-            self.vnos_podnapis.dnd_bind("<<Drop>>", self._drop_podnapis)
+            for widget, callback in self._drop_tarce():
+                self._registriraj_drag_drop_tarco(widget, callback, DND_FILES)
 
-            # Hitro pretvorbo
-            self.vnos_hitro_video.drop_target_register(DND_FILES)
-            self.vnos_hitro_video.dnd_bind("<<Drop>>", self._drop_hitro_video)
-
-            # Drevo vhodnih datotek
-            self.drevo_vhod.drop_target_register(DND_FILES)
-            self.drevo_vhod.dnd_bind("<<Drop>>", self._drop_vhodne)
-
-            # Gumbi za dodajanje v pregledu sledi
-            self.gumb_podnapisi.drop_target_register(DND_FILES)
-            self.gumb_podnapisi.dnd_bind("<<Drop>>", self._drop_op_podnapisi)
-            self.gumb_zvok.drop_target_register(DND_FILES)
-            self.gumb_zvok.dnd_bind("<<Drop>>", self._drop_op_zvok)
+            self._drag_drop_nastavljen = True
 
         except ImportError:
             # tkinterdnd2 ni na voljo - uporabi alternativno metodo za Linux
@@ -516,17 +711,24 @@ class BaMKV:
         # Poskusi nativno Tk DnD podporo
         try:
             self.root.tk.call("package", "require", "tkdnd")
+            self._drop_callback_po_widgetu = {
+                widget._w: callback for widget, callback in self._drop_tarce()
+            }
+            self._popravi_wayland_prvi_drop()
 
-            for widget, callback in [
-                (self.vnos_pot, self._drop_mkv),
-                (self.vnos_podnapis, self._drop_podnapis),
-                (self.vnos_hitro_video, self._drop_hitro_video),
-                (self.drevo_vhod, self._drop_vhodne),
-                (self.gumb_podnapisi, self._drop_op_podnapisi),
-                (self.gumb_zvok, self._drop_op_zvok),
-            ]:
-                self.root.tk.call("tkdnd::drop_target", "register", widget._w, "*")
-                widget.bind("<<Drop>>", callback)
+            for widget, callback in self._drop_tarce():
+                self.root.tk.call(
+                    "tkdnd::drop_target", "register", widget._w, "DND_Files"
+                )
+                self.root.tk.call("bind", widget._w, "<<DropEnter>>", "list copy")
+                self.root.tk.call("bind", widget._w, "<<DropPosition>>", "list copy")
+                funcid = self.root.register(
+                    lambda podatki, cb=callback: self._izvedi_drop(
+                        cb, SimpleNamespace(data=podatki, action="copy")
+                    )
+                )
+                self.root.tk.call("bind", widget._w, "<<Drop>>", f"{funcid} %D")
+            self._drag_drop_nastavljen = True
         except tk.TclError:
             print("Povleci in spusti ni na voljo. Namestite tkdnd ali tkinterdnd2.")
 
@@ -941,15 +1143,18 @@ class BaMKV:
     def _ustvari_vmesnik(self):
         """Ustvari glavni vmesnik."""
         # Okvir za izbiro datoteke
-        okvir_datoteka = ttk.LabelFrame(self.root, text="MKV datoteka", padding=10)
-        okvir_datoteka.pack(fill="x", padx=10, pady=5)
+        self.okvir_datoteka = ttk.LabelFrame(
+            self.root, text="MKV datoteka", padding=10
+        )
+        self.okvir_datoteka.pack(fill="x", padx=10, pady=5)
 
-        self.vnos_pot = ttk.Entry(okvir_datoteka, width=70)
+        self.vnos_pot = ttk.Entry(self.okvir_datoteka, width=70)
         self.vnos_pot.pack(side="left", fill="x", expand=True, padx=(0, 10))
 
-        ttk.Button(okvir_datoteka, text="Odpri MKV", command=self._odpri_mkv).pack(
-            side="left"
+        self.gumb_odpri_mkv = ttk.Button(
+            self.okvir_datoteka, text="Odpri MKV", command=self._odpri_mkv
         )
+        self.gumb_odpri_mkv.pack(side="left")
 
         # Zavihki
         zavihki = ttk.Notebook(self.root)
