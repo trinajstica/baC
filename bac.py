@@ -5,11 +5,12 @@ Avtor: BArko & SimOne
 
 Uporaba:
   bac          - Zaženi GUI
+  bac film.mkv - Zaženi GUI in odpri MKV datoteko
   bac -q       - Hitro združi vse video+srt v trenutnem imeniku v MKV
   bac -qq      - Kot -q, ampak izbriše izvorne datoteke po pretvorbi
 """
 
-verzija = "v1.0.4"
+verzija = "v1.0.6"
 
 import argparse
 import json
@@ -21,10 +22,24 @@ import tkinter as tk
 from pathlib import Path
 from types import SimpleNamespace
 from tkinter import filedialog, messagebox, ttk
+from urllib.parse import unquote, urlparse
+
+
+def normaliziraj_pot_argumenta(vrednost):
+    """Pretvori navadno pot ali file:// URI iz .desktop zagona v lokalno pot."""
+    pot = str(vrednost).strip()
+    if pot.startswith("{") and pot.endswith("}"):
+        pot = pot[1:-1]
+    if pot.startswith("file://"):
+        razclenjeno = urlparse(pot)
+        pot = unquote(razclenjeno.path)
+    else:
+        pot = unquote(pot)
+    return pot
 
 
 class BaMKV:
-    def __init__(self, root, prisiljena_tema=None):
+    def __init__(self, root, prisiljena_tema=None, zacetne_datoteke=None):
         self.root = root
         self.root.title(f"baC {verzija} - Urejanje MKV datotek")
         self.root.geometry("1200x800")
@@ -33,6 +48,7 @@ class BaMKV:
         self.mkv_pot = None
         self.stevilke_sledi = []
         self.prisiljena_tema = prisiljena_tema
+        self.zacetne_datoteke = zacetne_datoteke or []
         self._drag_drop_nastavljen = False
         self._drop_callback_po_widgetu = {}
         self._wayland_drop_funcid = None
@@ -43,6 +59,8 @@ class BaMKV:
         self._preveri_orodja()
         self._ustvari_vmesnik()
         self._nastavi_drag_drop()
+        if self.zacetne_datoteke:
+            self.root.after(100, self._odpri_zacetne_datoteke)
 
     def _zaznavaj_temo_namizja(self):
         """Zazna ali je sistem v temni ali svetli temi."""
@@ -734,21 +752,46 @@ class BaMKV:
 
     def _parsiraj_drop_pot(self, podatki):
         """Parsira pot iz dogodka povleci in spusti."""
-        pot = podatki.strip()
-        # Odstrani file:// predpono
-        if pot.startswith("file://"):
-            pot = pot[7:]
-        # Odstrani zavite oklepaje če obstajajo
-        if pot.startswith("{") and pot.endswith("}"):
-            pot = pot[1:-1]
-        # Dekodiraj URL encoding
-        from urllib.parse import unquote
-
-        pot = unquote(pot)
+        pot = normaliziraj_pot_argumenta(podatki)
         # Vzemi prvo datoteko če jih je več
         if "\n" in pot:
             pot = pot.split("\n")[0].strip()
         return pot
+
+    def _nalozi_mkv(self, pot):
+        """Odpre MKV datoteko v glavnem pogledu."""
+        self.mkv_pot = pot
+        self.vnos_pot.delete(0, tk.END)
+        self.vnos_pot.insert(0, pot)
+        self._osvezi_sledi()
+        self._osvezi_odstranitev()
+        self.zavihki.select(self.zavihek_pregled)
+        self.status.config(text=f"Odprto: {Path(pot).name}")
+
+    def _nalozi_hitro_video(self, pot):
+        """Naloži video v zavihek za hitro pretvorbo."""
+        self.vnos_hitro_video.delete(0, tk.END)
+        self.vnos_hitro_video.insert(0, pot)
+        self._poisci_povezane_hitro(pot)
+        self.zavihki.select(self.zavihek_hitro)
+        self.status.config(text=f"Video za hitro pretvorbo: {Path(pot).name}")
+
+    def _odpri_zacetne_datoteke(self):
+        """Obdela datoteke, podane ob zagonu programa."""
+        for vrednost in self.zacetne_datoteke:
+            pot = normaliziraj_pot_argumenta(vrednost)
+            if not pot or not os.path.isfile(pot):
+                continue
+
+            koncnica = Path(pot).suffix.lower()
+            if koncnica == ".mkv":
+                self._nalozi_mkv(pot)
+                return
+
+            messagebox.showwarning("Opozorilo", "Izberite MKV datoteko.")
+            return
+
+        self.status.config(text="Zagonska datoteka ni bila najdena.")
 
     def _drop_mkv(self, dogodek):
         """Obdelaj povlečeno in spuščeno MKV datoteko."""
@@ -756,12 +799,7 @@ class BaMKV:
         if pot and os.path.isfile(pot):
             koncnica = Path(pot).suffix.lower()
             if koncnica == ".mkv":
-                self.mkv_pot = pot
-                self.vnos_pot.delete(0, tk.END)
-                self.vnos_pot.insert(0, pot)
-                self._osvezi_sledi()
-                self._osvezi_odstranitev()
-                self.status.config(text=f"Odprto: {Path(pot).name}")
+                self._nalozi_mkv(pot)
             else:
                 messagebox.showwarning("Opozorilo", "Izberite MKV datoteko.")
         return dogodek.action if hasattr(dogodek, "action") else None
@@ -796,10 +834,7 @@ class BaMKV:
                 ".mkv",
             ]
             if koncnica in video_koncnice:
-                # Simuliraj izbiro datoteke
-                self.vnos_hitro_video.delete(0, tk.END)
-                self.vnos_hitro_video.insert(0, pot)
-                self._poisci_povezane_hitro(pot)
+                self._nalozi_hitro_video(pot)
             else:
                 messagebox.showwarning("Opozorilo", "Izberite video datoteko.")
         return dogodek.action if hasattr(dogodek, "action") else None
@@ -1157,42 +1192,42 @@ class BaMKV:
         self.gumb_odpri_mkv.pack(side="left")
 
         # Zavihki
-        zavihki = ttk.Notebook(self.root)
-        zavihki.pack(fill="both", expand=True, padx=10, pady=5)
+        self.zavihki = ttk.Notebook(self.root)
+        self.zavihki.pack(fill="both", expand=True, padx=10, pady=5)
 
         # Zavihek: Pregled sledi
-        okvir_pregled = ttk.Frame(zavihki, padding=10)
-        zavihki.add(okvir_pregled, text="Pregled sledi")
-        self._ustvari_pregled(okvir_pregled)
+        self.zavihek_pregled = ttk.Frame(self.zavihki, padding=10)
+        self.zavihki.add(self.zavihek_pregled, text="Pregled sledi")
+        self._ustvari_pregled(self.zavihek_pregled)
 
         # Zavihek: Dodaj podnapise
-        okvir_podnapisi = ttk.Frame(zavihki, padding=10)
-        zavihki.add(okvir_podnapisi, text="Dodaj podnapise")
+        okvir_podnapisi = ttk.Frame(self.zavihki, padding=10)
+        self.zavihki.add(okvir_podnapisi, text="Dodaj podnapise")
         self._ustvari_podnapisi(okvir_podnapisi)
 
         # Zavihek: Pretvori
-        okvir_pretvorba = ttk.Frame(zavihki, padding=10)
-        zavihki.add(okvir_pretvorba, text="Pretvori")
+        okvir_pretvorba = ttk.Frame(self.zavihki, padding=10)
+        self.zavihki.add(okvir_pretvorba, text="Pretvori")
         self._ustvari_pretvorbo(okvir_pretvorba)
 
         # Zavihek: Odstrani sledi
-        okvir_odstrani = ttk.Frame(zavihki, padding=10)
-        zavihki.add(okvir_odstrani, text="Odstrani sledi")
+        okvir_odstrani = ttk.Frame(self.zavihki, padding=10)
+        self.zavihki.add(okvir_odstrani, text="Odstrani sledi")
         self._ustvari_odstranitev(okvir_odstrani)
 
         # Zavihek: Ustvari MKV
-        okvir_ustvari = ttk.Frame(zavihki, padding=10)
-        zavihki.add(okvir_ustvari, text="Ustvari MKV")
+        okvir_ustvari = ttk.Frame(self.zavihki, padding=10)
+        self.zavihki.add(okvir_ustvari, text="Ustvari MKV")
         self._ustvari_izdelavo(okvir_ustvari)
 
         # Zavihek: Hitro pretvori v MKV
-        okvir_hitro = ttk.Frame(zavihki, padding=10)
-        zavihki.add(okvir_hitro, text="Hitro v MKV")
-        self._ustvari_hitro_pretvorbo(okvir_hitro)
+        self.zavihek_hitro = ttk.Frame(self.zavihki, padding=10)
+        self.zavihki.add(self.zavihek_hitro, text="Hitro v MKV")
+        self._ustvari_hitro_pretvorbo(self.zavihek_hitro)
 
         # Zavihek: Navodila
-        okvir_navodila = ttk.Frame(zavihki, padding=10)
-        zavihki.add(okvir_navodila, text="Navodila")
+        okvir_navodila = ttk.Frame(self.zavihki, padding=10)
+        self.zavihki.add(okvir_navodila, text="Navodila")
         self._ustvari_navodila(okvir_navodila)
 
         # Statusna vrstica
@@ -3520,6 +3555,7 @@ def main():
         epilog="""
 Primeri:
   bac           Zaženi grafični vmesnik
+  bac film.mkv  Zaženi grafični vmesnik in odpri datoteko
   bac -q        Hitro združi vse video+srt v MKV
   bac -qq       Kot -q, ampak izbriše izvorne datoteke
         """,
@@ -3547,6 +3583,11 @@ Primeri:
         "--light", action="store_true", help="Uporabi svetlo temo"
     )
     tema_skupina.add_argument("--dark", action="store_true", help="Uporabi temno temo")
+    parser.add_argument(
+        "datoteke",
+        nargs="*",
+        help="Datoteka za odpiranje v GUI načinu (podprti so tudi file:// URI iz .desktop %%U)",
+    )
 
     args = parser.parse_args()
 
@@ -3570,7 +3611,7 @@ Primeri:
         except ImportError:
             root = tk.Tk()
 
-        app = BaMKV(root, prisiljena_tema=prisiljena_tema)
+        app = BaMKV(root, prisiljena_tema=prisiljena_tema, zacetne_datoteke=args.datoteke)
         root.mainloop()
 
 
