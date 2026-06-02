@@ -3071,11 +3071,55 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
         "bos": 3,
         "bs": 3,
     }
+    angleski_audio_jeziki = {"eng", "en", "english"}
+
+    def je_angleski_audio(sled):
+        jezik = sled.get("tags", {}).get("language", "").lower()
+        return (
+            jezik in angleski_audio_jeziki
+            or jezik.startswith("en-")
+            or jezik.startswith("eng-")
+        )
+
+    def izberi_audio_sled(sledi):
+        """Vrne (kodek, globalni indeks, audio-relativni indeks), z angleščino prednostno."""
+        audio_sledi = []
+        for sled in sledi:
+            if sled.get("codec_type") == "audio":
+                audio_sledi.append((sled, len(audio_sledi)))
+
+        if not audio_sledi:
+            return None, None, None
+
+        izbrana_sled, relativni_indeks = next(
+            (
+                (sled, relativni_indeks)
+                for sled, relativni_indeks in audio_sledi
+                if je_angleski_audio(sled)
+            ),
+            audio_sledi[0],
+        )
+        return (
+            izbrana_sled.get("codec_name"),
+            izbrana_sled.get("index"),
+            relativni_indeks,
+        )
+
+    def edinstvena_bac_pot(pot):
+        osnovna_pot = Path(pot)
+        kandidat = osnovna_pot.with_name(f"{osnovna_pot.stem}_bac{osnovna_pot.suffix}")
+        stevec = 2
+        while kandidat.exists():
+            kandidat = osnovna_pot.with_name(
+                f"{osnovna_pot.stem}_bac_{stevec}{osnovna_pot.suffix}"
+            )
+            stevec += 1
+        return str(kandidat)
 
     def preveri_mkv_sledi(mkv_pot):
-        """Preveri sledi v MKV datoteki - vrne (ima_nase_podnapise, audio_kodek, nasi_privzeti, indeks_najboljsega, st_podnapisov, id_podnapisov, prvi_audio_id)."""
+        """Preveri sledi v MKV datoteki in prednostno izbere angleško audio sled."""
         if not ffprobe:
-            return None, None, False, None, 0, [], None
+            return None, None, False, None, 0, [], None, None
         try:
             if "flatpak run" in ffprobe:
                 deli = ffprobe.split()
@@ -3103,10 +3147,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
 
             ima_nase_podnapise = False
             nasi_privzeti = False
-            audio_kodek = None
             najboljsi_podnapis = None  # (prioriteta, subtitle-relativen indeks)
             sub_track_ids = []  # Globalni track ID-ji subtitle sledi (za mkvmerge)
-            audio_track_ids = []  # Globalni track ID-ji audio sledi
 
             sub_indeks = 0  # Šteje samo subtitle sledi
             for sled in sledi:
@@ -3128,13 +3170,9 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                             najboljsi_podnapis = (prio, sub_indeks)
 
                     sub_indeks += 1
-                elif sled.get("codec_type") == "audio":
-                    if not audio_kodek:
-                        audio_kodek = sled.get("codec_name")
-                    audio_track_ids.append(sled.get("index"))
 
             indeks_za_privzet = najboljsi_podnapis[1] if najboljsi_podnapis else None
-            prvi_audio = audio_track_ids[0] if audio_track_ids else None
+            audio_kodek, izbrani_audio, izbrani_audio_relativni = izberi_audio_sled(sledi)
             return (
                 ima_nase_podnapise,
                 audio_kodek,
@@ -3142,10 +3180,11 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                 indeks_za_privzet,
                 sub_indeks,
                 sub_track_ids,
-                prvi_audio,
+                izbrani_audio,
+                izbrani_audio_relativni,
             )
         except Exception:
-            return None, None, False, None, 0, [], None
+            return None, None, False, None, 0, [], None, None
 
     def obdelaj_obstojeci_mkv(mkv_pot, srt_pot, izbrisi_izvorne):
         """Obdelaj obstoječo MKV datoteko - doda podnapise, pretvori audio če potrebno."""
@@ -3158,7 +3197,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
             indeks_za_privzet,
             sub_indeks,
             sub_track_ids,
-            prvi_audio_indeks,
+            izbrani_audio_indeks,
+            izbrani_audio_relativni,
         ) = preveri_mkv_sledi(mkv_pot)
         sub_indeks = sub_indeks or 0
         sub_track_ids = sub_track_ids or []
@@ -3189,7 +3229,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
             print(f"  + pretvarjam zvok ({audio_kodek} → AC3)")
 
         try:
-            zacasna_pot = mkv_pot.replace(".mkv", "_temp_bac.mkv")
+            ciljna_pot = mkv_pot if izbrisi_izvorne else edinstvena_bac_pot(mkv_pot)
+            zacasna_pot = ciljna_pot.replace(".mkv", "_temp_bac.mkv")
 
             if pretvori_audio and ffmpeg:
                 # Uporabi ffmpeg za pretvorbo zvoka
@@ -3208,13 +3249,22 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                     ["-c:v", "copy", "-c:a", "ac3", "-b:a", "192k", "-c:s", "copy"]
                 )
 
+                audio_map = (
+                    f"0:a:{izbrani_audio_relativni}"
+                    if izbrani_audio_relativni is not None
+                    else "0:a:0"
+                )
                 if dodaj_podnapise and srt_pot:
                     # Samo prvi audio, brez obstoječih podnapisov, dodamo SRT kot privzet
-                    ukaz_ff.extend(["-map", "0:v", "-map", "0:a:0", "-map", "1:0"])
+                    ukaz_ff.extend(["-map", "0:v", "-map", audio_map, "-map", "1:0"])
                     ukaz_ff.extend(["-metadata:s:s:0", "language=slv"])
                     ukaz_ff.extend(["-disposition:s:0", "default"])
-                elif nastavi_privzete and indeks_za_privzet is not None:
-                    ukaz_ff.extend([f"-disposition:s:{indeks_za_privzet}", "default"])
+                else:
+                    ukaz_ff.extend(["-map", "0:v", "-map", audio_map, "-map", "0:s?"])
+                    if nastavi_privzete and indeks_za_privzet is not None:
+                        ukaz_ff.extend(
+                            [f"-disposition:s:{indeks_za_privzet}", "default"]
+                        )
 
                 ukaz_ff.append(zacasna_pot)
                 subprocess.run(ukaz_ff, check=True, capture_output=True)
@@ -3227,8 +3277,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
 
                 if dodaj_podnapise:
                     # Dodamo SRT - izpustimo vse ostale podnapise, ohranimo samo prvi audio
-                    if prvi_audio_indeks is not None:
-                        ukaz.extend(["--audio-tracks", str(prvi_audio_indeks)])
+                    if izbrani_audio_indeks is not None:
+                        ukaz.extend(["--audio-tracks", str(izbrani_audio_indeks)])
                     ukaz.extend(["--no-subtitles"])
                     ukaz.append(mkv_pot)
                     ukaz.extend(
@@ -3249,11 +3299,14 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
             else:
                 return False
 
-            # Zamenjaj staro z novo
-            os.remove(mkv_pot)
-            os.rename(zacasna_pot, mkv_pot)
-
-            print(f"  ✓ Posodobljen: {Path(mkv_pot).name}")
+            if izbrisi_izvorne:
+                # Zamenjaj staro z novo
+                os.remove(mkv_pot)
+                os.rename(zacasna_pot, mkv_pot)
+                print(f"  ✓ Posodobljen: {Path(mkv_pot).name}")
+            else:
+                os.rename(zacasna_pot, ciljna_pot)
+                print(f"  ✓ Ustvarjen: {Path(ciljna_pot).name}")
 
             # Izbriši SRT če je zahtevano
             if srt_pot and izbrisi_izvorne:
@@ -3341,7 +3394,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
         try:
             # Preveri audio kodek in poišči indeks prvega audio streama
             audio_kodek = None
-            prvi_audio_id = None
+            izbrani_audio_id = None
+            izbrani_audio_relativni = None
             if ffprobe:
                 try:
                     if "flatpak run" in ffprobe:
@@ -3368,11 +3422,9 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                         ukaz, capture_output=True, text=True, check=True
                     )
                     podatki = json.loads(rezultat.stdout)
-                    for sled in podatki.get("streams", []):
-                        if sled.get("codec_type") == "audio":
-                            audio_kodek = sled.get("codec_name")
-                            prvi_audio_id = sled.get("index")
-                            break
+                    audio_kodek, izbrani_audio_id, izbrani_audio_relativni = (
+                        izberi_audio_sled(podatki.get("streams", []))
+                    )
                 except Exception:
                     pass
 
@@ -3393,6 +3445,12 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                     ukaz_ff = [ffmpeg, "-i", video_pot, "-y"]
 
                 # -sn onemogoči kopiranje podnapisov iz izvorne datoteke
+                audio_map = (
+                    f"0:a:{izbrani_audio_relativni}"
+                    if izbrani_audio_relativni is not None
+                    else "0:a:0"
+                )
+                ukaz_ff.extend(["-map", "0:v", "-map", audio_map])
                 ukaz_ff.extend(["-c:v", "copy", "-c:a", "ac3", "-b:a", "192k", "-sn"])
                 ukaz_ff.append(zacasna_pot)
 
@@ -3406,8 +3464,8 @@ def hitro_pretvorba_cli(izbrisi_izvorne=False):
                 ukaz = [mkvmerge, "-o", ciljna_pot]
 
             # Ohrani samo prvi audio track iz izvorne (če ni bil že pretvorjen)
-            if not potrebna_pretvorba_audio and prvi_audio_id is not None:
-                ukaz.extend(["--audio-tracks", str(prvi_audio_id)])
+            if not potrebna_pretvorba_audio and izbrani_audio_id is not None:
+                ukaz.extend(["--audio-tracks", str(izbrani_audio_id)])
             ukaz.append(vhodna_datoteka)
 
             # Dodaj podnapise
