@@ -10,7 +10,7 @@ Uporaba:
   bac -qq      - Kot -q, ampak izbriše izvorne datoteke po pretvorbi
 """
 
-verzija = "v1.0.6"
+verzija = "v1.0.7"
 
 import argparse
 import json
@@ -1299,8 +1299,23 @@ class BaMKV:
         self.meni_sledi.add_command(
             label="Pretvori zvok v MP3", command=lambda: self._op_pretvori_zvok("mp3")
         )
+        self.meni_sledi.add_separator()
+        self.meni_sledi.add_command(
+            label="Pretvori video v H.264 / AVC",
+            command=lambda: self._op_pretvori_video("h264"),
+        )
+        self.meni_sledi.add_command(
+            label="Pretvori video v H.265 / HEVC",
+            command=lambda: self._op_pretvori_video("hevc"),
+        )
+        self.meni_sledi.add_command(
+            label="Pretvori video v VP9",
+            command=lambda: self._op_pretvori_video("vp9"),
+        )
 
         self.drevo_sledi.bind("<Button-3>", self._prikazi_meni_sledi)
+        self.root.bind_all("<Button-1>", self._zapri_meni_sledi, add="+")
+        self.root.bind_all("<Escape>", self._zapri_meni_sledi, add="+")
 
         # Gumbi za dodajanje datotek
         okvir_dodaj = ttk.Frame(okvir_sledi)
@@ -1357,10 +1372,19 @@ class BaMKV:
 
     def _prikazi_meni_sledi(self, dogodek):
         """Prikaže kontekstni meni za izbrano sled."""
+        self.meni_sledi.unpost()
         vrstica = self.drevo_sledi.identify_row(dogodek.y)
         if vrstica:
             self.drevo_sledi.selection_set(vrstica)
             self.meni_sledi.post(dogodek.x_root, dogodek.y_root)
+
+    def _zapri_meni_sledi(self, dogodek=None):
+        """Zapre popup meni sledi ob kliku zunaj njega ali s tipko Escape."""
+        if dogodek is not None and str(dogodek.widget).startswith(
+            str(self.meni_sledi)
+        ):
+            return
+        self.meni_sledi.unpost()
 
     def _pridobi_izbrano_sled(self):
         """Vrne podatke o izbrani sledi."""
@@ -1503,6 +1527,22 @@ class BaMKV:
             {"stevilka": sled["stevilka"], "kodek": kodek},
         )
 
+    def _op_pretvori_video(self, kodek):
+        """Doda operacijo za pretvorbo izbrane video sledi."""
+        sled = self._pridobi_izbrano_sled()
+        if not sled:
+            return
+        if sled["vrsta"] != "Video":
+            messagebox.showwarning("Opozorilo", "Izberite video sled.")
+            return
+
+        imena = {"h264": "H.264 / AVC", "hevc": "H.265 / HEVC", "vp9": "VP9"}
+        self._dodaj_operacijo(
+            "Pretvori video",
+            f"Sled {sled['stevilka']}: {sled['kodek']} → {imena[kodek]}",
+            {"stevilka": sled["stevilka"], "kodek": kodek},
+        )
+
     def _op_dodaj_podnapise(self):
         """Doda operacijo za dodajanje podnapisov."""
         if not self.mkv_pot:
@@ -1552,6 +1592,16 @@ class BaMKV:
             messagebox.showerror("Napaka", "mkvmerge ni nameščen.")
             return
 
+        if any(
+            op["tip"] in ("Pretvori zvok", "Pretvori video")
+            for op in self.cakalne_operacije
+        ) and not self.ffmpeg:
+            messagebox.showerror(
+                "Napaka",
+                "Za pretvorbo sledi potrebujete nameščen ffmpeg.",
+            )
+            return
+
         # Ciljna datoteka
         osnovni_dir = os.path.dirname(self.mkv_pot)
         osnovni_ime = Path(self.mkv_pot).stem
@@ -1577,6 +1627,7 @@ class BaMKV:
             spremembe_naslova = {}
             privzete_sledi = {"video": None, "audio": None, "subtitle": None}
             pretvorbe_zvoka = {}
+            pretvorbe_videa = {}
             dodatne_datoteke = []
 
             for op in self.cakalne_operacije:
@@ -1598,6 +1649,8 @@ class BaMKV:
                     privzete_sledi[vrsta] = str(podatki["stevilka"])
                 elif tip == "Pretvori zvok":
                     pretvorbe_zvoka[str(podatki["stevilka"])] = podatki["kodek"]
+                elif tip == "Pretvori video":
+                    pretvorbe_videa[str(podatki["stevilka"])] = podatki["kodek"]
                 elif tip == "Dodaj podnapise":
                     dodatne_datoteke.append({"vrsta": "subtitle", **podatki})
                 elif tip == "Dodaj zvok":
@@ -1612,9 +1665,9 @@ class BaMKV:
             vhodna_datoteka = self.mkv_pot
             zacasna_pot = None
 
-            if pretvorbe_zvoka and self.ffmpeg:
-                self._nastavi_zasedeno("Pretvarjam zvok...")
-                zacasna_pot = ciljna_pot.replace(".mkv", "_temp_audio.mkv")
+            if (pretvorbe_zvoka or pretvorbe_videa) and self.ffmpeg:
+                self._nastavi_zasedeno("Pretvarjam izbrane sledi...")
+                zacasna_pot = ciljna_pot.replace(".mkv", "_temp_tracks.mkv")
 
                 if "flatpak run" in self.ffmpeg:
                     ukaz_ff = self.ffmpeg.split() + ["-i", self.mkv_pot, "-y"]
@@ -1629,6 +1682,16 @@ class BaMKV:
                     ukaz_ff.extend([f"-c:{stevilka}", kodeki_map.get(kodek, "ac3")])
                     if kodek != "flac":
                         ukaz_ff.extend([f"-b:{stevilka}", "192k"])
+
+                kodeki_videa = {
+                    "h264": "libx264",
+                    "hevc": "libx265",
+                    "vp9": "libvpx-vp9",
+                }
+                for stevilka, kodek in pretvorbe_videa.items():
+                    ukaz_ff.extend(
+                        [f"-c:{stevilka}", kodeki_videa.get(kodek, "libx264"), "-crf", "23"]
+                    )
 
                 ukaz_ff.append(zacasna_pot)
                 subprocess.run(ukaz_ff, check=True, capture_output=True)
@@ -2162,9 +2225,13 @@ class BaMKV:
                     "  • Spremeni naslov - spremeni naslov/ime sledi",
                     "  • Nastavi kot privzeto - označi sled kot privzeto",
                     "  • Pretvori zvok - pretvori zvočno sled v drug format (AAC, AC3, MP3)",
+                    "  • Pretvori video - pretvori izbrano video sled v H.264/AVC, H.265/HEVC ali VP9",
                     "",
-                    "Spodaj je seznam čakajočih operacij. Ko dodate operacije, kliknite",
-                    "'Izvedi vse' za uporabo vseh sprememb na MKV datoteki.",
+                    "Pretvorba videa je namenjena izboljšanju združljivosti z napravami, kot so TV-ji.",
+                    "H.264/AVC je običajno najbolj združljiva izbira.",
+                    "Operacija se doda na seznam čakajočih operacij; kliknite 'Izvedi vse'",
+                    "za uporabo vseh sprememb in shranjevanje nove MKV datoteke.",
+                    "Klik zunaj popup menija ali tipka Escape meni zapre.",
                     "",
                     "Gumba '+ Podnapisi' in '+ Zvok' omogočata povleci-in-spusti datotek.",
                 ],
